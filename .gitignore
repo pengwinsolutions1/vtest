@@ -134,6 +134,9 @@ vendor-box/data/
 vendor-box/results/
 vendor-box/venv/
 vendor-box/.venv/
+vendor-box/IDM-VTON/
+vendor-box/DM-VTON/
+vendor-box/Wan2.1/
 /var/lib/vendorbox/
 
 # ============================================================================
