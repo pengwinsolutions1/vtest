@@ -55,9 +55,14 @@ echo "  installing $CUPY_SPEC"
 # during this install, cupy 12.x will silently break (it needs <1.29).
 # All opencv variants (headless, contrib) need to stay <4.13 for the same
 # reason. Same with tifffile.
+#
+# nvidia-cuda-nvrtc-cu12 ships libnvrtc.so.12 which CuPy needs for kernel
+# JIT compilation. The system CUDA install often lacks the *-dev / nvrtc
+# package; this pip wheel provides it self-contained.
 pip install \
   "$CUPY_SPEC" \
   'numpy>=1.26,<2' \
+  'nvidia-cuda-nvrtc-cu12' \
   'tensorboard' \
   'opencv-python-headless>=4.9,<4.13' \
   'opencv-contrib-python<4.13' \
@@ -65,7 +70,7 @@ pip install \
   'tifffile<2025' \
   'pillow>=10.0' \
   'tqdm'
-ok "DM-VTON extras installed (incl. $CUPY_SPEC)"
+ok "DM-VTON extras installed (incl. $CUPY_SPEC + nvrtc)"
 
 # ── 3. Pretrained checkpoints (MANUAL STEP) ────────────────────────────────
 say "3/3 — pretrained checkpoints"
