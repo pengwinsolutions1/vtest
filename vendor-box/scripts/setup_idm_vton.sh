@@ -57,6 +57,20 @@ mkdir -p "$TARGET"
 # HF rate-limits unauthenticated downloads aggressively (esp. for large
 # repos). Check the token is set up — either via HF_TOKEN env var or a
 # cached login in ~/.cache/huggingface/token.
+# Test connectivity to HuggingFace. Some networks (regional firewalls, ISP
+# throttling, etc.) block huggingface.co outright — fall back to the public
+# hf-mirror.com which proxies all repos and is reachable from most regions.
+if [[ -z "${HF_ENDPOINT:-}" ]]; then
+  if ! curl -sf --max-time 5 -o /dev/null https://huggingface.co/; then
+    if curl -sf --max-time 5 -o /dev/null https://hf-mirror.com/; then
+      warn "huggingface.co unreachable from this box — falling back to hf-mirror.com"
+      export HF_ENDPOINT=https://hf-mirror.com
+    else
+      die "Neither huggingface.co nor hf-mirror.com is reachable. Check network/firewall/DNS on this box."
+    fi
+  fi
+fi
+
 TOKEN_CACHE="$HOME/.cache/huggingface/token"
 if [[ -z "${HF_TOKEN:-}" && ! -s "$TOKEN_CACHE" ]]; then
   cat <<EOF
