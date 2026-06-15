@@ -1,0 +1,147 @@
+# ============================================================================
+# OS / editor
+# ============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.history/
+
+# ============================================================================
+# Secrets — NEVER commit. .env* catches every variant.
+# ============================================================================
+.env
+.env.*
+*.pem
+*.key
+secrets/
+**/credentials.json
+
+# ============================================================================
+# Node / Next.js webapp
+# ============================================================================
+node_modules/
+.next/
+out/
+dist/
+build/
+.npm/
+.eslintcache
+*.tsbuildinfo
+next-env.d.ts
+
+# Webapp runtime data — SQLite + customer uploads. Regenerated from seed.
+webapp/data/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Electron build output (when we add electron-builder)
+release/
+dist_electron/
+*.dmg
+*.exe
+*.AppImage
+*.deb
+
+# ============================================================================
+# Python
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+*.eggs/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python venvs — ALL variants. These can be 2-6 GB each on this repo.
+venv/
+venv-*/
+env/
+ENV/
+.venv/
+**/venv/
+**/venv-*/
+**/.venv/
+
+# ============================================================================
+# AI model weights and caches — large, downloadable, never commit.
+# ============================================================================
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.onnx
+*.engine
+*.trt
+*.gguf
+*.h5
+*.hdf5
+
+# HuggingFace / PyTorch download caches
+.cache/
+**/.cache/huggingface/
+**/hf_cache/
+
+# ============================================================================
+# Repo-specific large / vendored directories
+# ============================================================================
+# Cloned 3rd-party AI repos (re-cloneable; we patch in place — see docs)
+ai-local/ComfyUI/
+ai-local/Hunyuan3D-2/
+ai-local/TripoSR/
+ai-local/brush/
+ai-local/target/
+
+# Legacy iterations — kept locally for reference, not version-controlled
+archive/
+
+# User's scratch / test imagery for the parked photogrammetry experiments
+garmets/
+
+# Loose test PNGs in the project root (user's scratch images). Add specific
+# ones explicitly with `git add -f` if needed.
+/*.png
+/*.jpg
+/*.jpeg
+/*.mp4
+/*.glb
+
+# ============================================================================
+# Vendor-box runtime data
+# ============================================================================
+vendor-box/results/
+vendor-box/.venv/
+/var/lib/vendorbox/
+
+# ============================================================================
+# Misc temp
+# ============================================================================
+tmp/
+.tmp/
+*.tmp
+*.bak
+*.orig
+
+# Claude Code per-user settings (don't share machine-specific overrides)
+.claude/settings.local.json
