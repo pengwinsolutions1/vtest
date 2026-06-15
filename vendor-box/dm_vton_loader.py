@@ -276,10 +276,12 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
     )
 
     log.info("loading MediaPipe ImageSegmenter (selfie body mask)…")
+    # Image segmenter ships as .tflite, not .task. URL pattern is different
+    # from PoseLandmarker — versioned path, no "latest" alias.
     seg_task = _ensure_mp_task(
-        mp_dir, "selfie_segmenter.task",
+        mp_dir, "selfie_segmenter.tflite",
         "https://storage.googleapis.com/mediapipe-models/image_segmenter/"
-        "selfie_segmenter/float16/latest/selfie_segmenter.task",
+        "selfie_segmenter/float16/1/selfie_segmenter.tflite",
     )
     segmenter = mp_vision.ImageSegmenter.create_from_options(
         mp_vision.ImageSegmenterOptions(
