@@ -42,9 +42,10 @@ class DMVTONPipe:
         import torch
         from torchvision import transforms
 
-        H, W = 256, 192  # DM-VTON's native resolution
+        H, W = 256, 192  # DM-VTON's native inference resolution
+        orig_size = frame.size   # we composite + return at this size
 
-        # Resize inputs
+        # Resize the inputs DOWN for DM-VTON inference
         frame_rgb = frame.convert("RGB").resize((W, H))
         garment_rgba = garment.convert("RGBA").resize((W, H))
 
@@ -65,11 +66,37 @@ class DMVTONPipe:
         with torch.no_grad():
             p_tryon, _warped = self.pipeline(person_t, clothes_t, edge_t, phase="test")
 
-        # Denormalize [-1,1] → [0,1] → PIL
+        # Denormalize [-1,1] → [0,1] → numpy uint8
         result = ((p_tryon.clamp(-1, 1) + 1) / 2)
         result = result.squeeze(0).permute(1, 2, 0).float().cpu().numpy()
-        result = (result * 255).astype(np.uint8)
-        return Image.fromarray(result).resize(frame.size)
+        ai_np = (result * 255).astype(np.uint8)
+
+        # ── Composite the AI render onto the original webcam frame ───────
+        # DM-VTON only paints the body+clothing region cleanly; the rest of
+        # its output is messy (black corners, garbage in the background).
+        # Strategy:
+        #   1. Upscale BOTH the AI output and the small input frame to the
+        #      original frame's resolution (Lanczos = high quality)
+        #   2. Build a soft mask from per-pixel difference. Where the AI
+        #      changed a lot → person/dress (use AI). Where it barely
+        #      changed → background/arms/hands (use webcam).
+        #   3. Composite at full resolution and return.
+        ai_full = np.array(
+            Image.fromarray(ai_np).resize(orig_size, Image.LANCZOS)
+        )
+        frame_full = np.array(frame.convert("RGB"))
+        if frame_full.shape != ai_full.shape:
+            # Safety: if PIL gave a slightly off size, force-match
+            frame_full = np.array(
+                frame.convert("RGB").resize((ai_full.shape[1], ai_full.shape[0]))
+            )
+
+        diff = np.abs(ai_full.astype(np.int16) - frame_full.astype(np.int16)).max(axis=2)
+        # Smoothstep over [12, 55] gray-level diff → 0..1 alpha
+        x = np.clip((diff - 12) / 43.0, 0, 1)
+        mask = (x * x * (3 - 2 * x))[..., None]
+        composited = ai_full * mask + frame_full * (1 - mask)
+        return Image.fromarray(composited.astype(np.uint8))
 
 
 def load_dm_vton_trt(path: Path) -> DMVTONPipe:

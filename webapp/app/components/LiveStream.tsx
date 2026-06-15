@@ -142,9 +142,12 @@ export default function LiveStream({ wsUrl, garmentUrl, garmentCategory, liveMod
     function sendFrame(video: HTMLVideoElement, ws: WebSocket) {
       if (!video.videoWidth) return;
       const c = sendCanvasRef.current || (sendCanvasRef.current = document.createElement('canvas'));
-      // DM-VTON's native is 192x256. Sending bigger wastes bandwidth.
-      // Downsize aggressively + mirror so the server gets a selfie-view frame.
-      const W = 256, H = 192;
+      // DM-VTON itself runs inference at 192x256, but the server composites the
+      // AI output back onto the original frame at this resolution and returns
+      // that. Higher = sharper background + better preservation of the user's
+      // arms/hands outside the dress region. 512x384 is the sweet spot — small
+      // enough for ~10fps over LAN, large enough that the composite looks crisp.
+      const W = 512, H = 384;
       c.width = W; c.height = H;
       const ctx = c.getContext('2d')!;
       ctx.save();
