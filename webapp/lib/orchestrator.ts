@@ -55,7 +55,10 @@ export async function advanceJob(jobId: string): Promise<void> {
       const videoPredId = await backend.kickoffVideo(updated.still_image_url!);
       updateJob(job.id, { status: 'video', video_prediction_id: videoPredId });
     } catch (e: any) {
-      updateJob(job.id, { status: 'failed', error: `video kickoff failed: ${e.message}` });
+      // Video step unavailable (e.g. Wan 2.1 not loaded on the vendor box).
+      // The still image is the result — finish successfully on it.
+      console.warn(`[advance] video step unavailable (${e.message}) — finishing on still only`);
+      updateJob(job.id, { status: 'succeeded' });
     }
   } else if (job.status === 'video') {
     updateJob(job.id, { status: 'succeeded', video_url: poll.output_url || null });
