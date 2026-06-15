@@ -20,13 +20,36 @@ body {
 button { font: inherit; cursor: pointer; }
 input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 
-/* --- Fullscreen live AR stage --- */
+/* --- Stage: a portrait-shaped kiosk frame, centred on screen --- */
 .stage {
   position: fixed;
   inset: 0;
-  background: #000;
+  background: #0a0a0a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
   overflow: hidden;
 }
+
+/* The portrait frame. 3:4 aspect, sized by viewport so it fits any screen:
+   - On portrait screens (phone), nearly fills the viewport.
+   - On landscape desktops, shows as a tall narrow "phone-shape" display
+     with dark gutters on either side. */
+.stage-frame {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  width: min(90vw, calc((100vh - 200px) * 3 / 4));
+  max-height: calc(100vh - 200px);
+  overflow: hidden;
+  border-radius: 24px;
+  background: #000;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6),
+              0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
 .stage-canvas {
   position: absolute;
   inset: 0;
@@ -35,10 +58,10 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   display: block;
 }
 
-/* status pill, top-left */
+/* status pill, top-left of FRAME */
 .status-pill {
-  position: fixed;
-  top: max(env(safe-area-inset-top), 12px);
+  position: absolute;
+  top: 12px;
   left: 12px;
   padding: 6px 12px;
   background: rgba(0, 0, 0, 0.55);
@@ -53,15 +76,17 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  z-index: 12;
 }
 
-/* gender chips, top-right */
+/* gender chips, top-right of FRAME */
 .gender-chips {
-  position: fixed;
-  top: max(env(safe-area-inset-top), 12px);
+  position: absolute;
+  top: 12px;
   right: 12px;
   display: flex;
   gap: 6px;
+  z-index: 12;
 }
 .g-chip {
   padding: 6px 12px;
@@ -82,12 +107,11 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   border-color: var(--accent);
 }
 
-/* bottom garment strip */
+/* Garment picker — sits BELOW the portrait frame inside the flex stage.
+   Scrolls horizontally if there are more than fit. */
 .picker {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  flex: 0 0 auto;
+  width: min(95vw, 720px);
   padding: 12px 14px calc(max(env(safe-area-inset-bottom), 12px));
   display: flex;
   gap: 10px;
@@ -95,7 +119,8 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   overflow-y: hidden;
   scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.05) 80%, transparent);
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 16px;
 }
 .picker::-webkit-scrollbar { display: none; }
 
@@ -153,7 +178,7 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 .stage-snapshot, .stage-result { display: block; }
 
 .capture-flash {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: #fff;
   opacity: 0;
@@ -168,8 +193,8 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 }
 
 .try-again-btn {
-  position: fixed;
-  bottom: calc(120px + max(env(safe-area-inset-bottom), 12px));
+  position: absolute;
+  bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
   padding: 12px 28px;
@@ -189,7 +214,7 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 
 /* --- Framing instruction + countdown (preparing phase) --- */
 .framing-overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
@@ -201,16 +226,16 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   text-align: center;
 }
 .framing-instruction {
-  font-size: 32px;
+  font-size: clamp(18px, 4.5vh, 28px);
   font-weight: 700;
   color: #fff;
-  padding: 14px 28px;
+  padding: 12px 22px;
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border-radius: 16px;
+  border-radius: 14px;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
-  max-width: 80%;
+  max-width: 85%;
 }
 .framing-sub {
   font-size: 14px;
@@ -218,7 +243,7 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   letter-spacing: 0.4px;
 }
 .framing-countdown .framing-digit {
-  font-size: 180px;
+  font-size: clamp(80px, 25vh, 160px);
   font-weight: 800;
   color: #fff;
   line-height: 1;
@@ -233,7 +258,7 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 
 /* --- Overlay states (processing / failed) --- */
 .processing-overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;

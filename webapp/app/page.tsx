@@ -392,88 +392,95 @@ export default function Home() {
 
   return (
     <div className="stage">
-      <video
-        ref={videoRef}
-        playsInline muted autoPlay
-        className={`stage-video ${showLiveVideo ? '' : 'hidden'}`}
-      />
+      {/* Portrait-shaped frame — kiosk display style. On desktop this is a
+          tall narrow viewport centred in the page. On phones it fills most
+          of the screen height. Everything related to the try-on view lives
+          inside this frame; the picker sits outside it. */}
+      <div className="stage-frame">
+        <video
+          ref={videoRef}
+          playsInline muted autoPlay
+          className={`stage-video ${showLiveVideo ? '' : 'hidden'}`}
+        />
 
-      {showCaptured && snapshotDataUrl && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={snapshotDataUrl} alt="" className="stage-snapshot" />
-      )}
+        {showCaptured && snapshotDataUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={snapshotDataUrl} alt="" className="stage-snapshot" />
+        )}
 
-      {showResult && jobStatus?.video_url ? (
-        <video src={jobStatus.video_url} autoPlay loop muted playsInline className="stage-result" />
-      ) : showResult && jobStatus?.still_image_url ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={jobStatus.still_image_url} alt="" className="stage-result" />
-      ) : null}
+        {showResult && jobStatus?.video_url ? (
+          <video src={jobStatus.video_url} autoPlay loop muted playsInline className="stage-result" />
+        ) : showResult && jobStatus?.still_image_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={jobStatus.still_image_url} alt="" className="stage-result" />
+        ) : null}
 
-      {phase === 'capturing' && <div className="capture-flash" />}
+        {phase === 'capturing' && <div className="capture-flash" />}
 
-      {/* Framing instruction + countdown — visible only during 'preparing' */}
-      {phase === 'preparing' && countdown === null && (
-        <div className="framing-overlay">
-          <div className="framing-instruction">{framing.instruction}</div>
-          <div className="framing-sub">trying on {selectedGarment?.name || ''}</div>
-        </div>
-      )}
-      {phase === 'preparing' && countdown !== null && (
-        <div className="framing-overlay framing-countdown">
-          <div className="framing-digit">{countdown}</div>
-          <div className="framing-sub">hold still</div>
-        </div>
-      )}
-
-      <div className="status-pill">{fatal || status}</div>
-
-      {presentGenders.length > 1 && phase === 'live' && (
-        <div className="gender-chips">
-          <button
-            className={`g-chip ${activeGender === 'all' ? 'active' : ''}`}
-            onClick={() => setActiveGender('all')}
-          >All</button>
-          {presentGenders.map(g => (
-            <button
-              key={g}
-              className={`g-chip ${activeGender === g ? 'active' : ''}`}
-              onClick={() => setActiveGender(g)}
-            >{GENDER_EMOJI[g]} {GENDER_LABELS[g]}</button>
-          ))}
-        </div>
-      )}
-
-      {/* Processing overlay */}
-      {(phase === 'submitting' || phase === 'processing') && (
-        <div className="processing-overlay">
-          <div className="spinner" />
-          <div className="processing-text">
-            {phase === 'submitting' ? 'Uploading…' : 'Generating your photo (~20 sec)…'}
+        {/* Framing instruction + countdown — visible only during 'preparing' */}
+        {phase === 'preparing' && countdown === null && (
+          <div className="framing-overlay">
+            <div className="framing-instruction">{framing.instruction}</div>
+            <div className="framing-sub">trying on {selectedGarment?.name || ''}</div>
           </div>
-          {selectedGarment && (
-            <div className="processing-sub">Trying on {selectedGarment.name}</div>
-          )}
-        </div>
-      )}
+        )}
+        {phase === 'preparing' && countdown !== null && (
+          <div className="framing-overlay framing-countdown">
+            <div className="framing-digit">{countdown}</div>
+            <div className="framing-sub">hold still</div>
+          </div>
+        )}
 
-      {/* Result actions */}
-      {showResult && (
-        <button className="try-again-btn" onClick={backToCamera}>
-          Back to camera
-        </button>
-      )}
+        <div className="status-pill">{fatal || status}</div>
 
-      {/* Failed actions */}
-      {phase === 'failed' && (
-        <div className="processing-overlay" style={{ pointerEvents: 'auto' }}>
-          <div className="processing-text">Try-on failed</div>
-          <div className="processing-sub">{status}</div>
-          <button className="try-again-btn try-again-btn-inline" onClick={backToCamera}>
+        {presentGenders.length > 1 && phase === 'live' && (
+          <div className="gender-chips">
+            <button
+              className={`g-chip ${activeGender === 'all' ? 'active' : ''}`}
+              onClick={() => setActiveGender('all')}
+            >All</button>
+            {presentGenders.map(g => (
+              <button
+                key={g}
+                className={`g-chip ${activeGender === g ? 'active' : ''}`}
+                onClick={() => setActiveGender(g)}
+              >{GENDER_EMOJI[g]} {GENDER_LABELS[g]}</button>
+            ))}
+          </div>
+        )}
+
+        {/* Processing overlay */}
+        {(phase === 'submitting' || phase === 'processing') && (
+          <div className="processing-overlay">
+            <div className="spinner" />
+            <div className="processing-text">
+              {phase === 'submitting' ? 'Uploading…' : 'Generating your photo (~5 sec, fast mode)…'}
+            </div>
+            {selectedGarment && (
+              <div className="processing-sub">Trying on {selectedGarment.name}</div>
+            )}
+          </div>
+        )}
+
+        {/* Result actions */}
+        {showResult && (
+          <button className="try-again-btn" onClick={backToCamera}>
             Back to camera
           </button>
-        </div>
-      )}
+        )}
+
+        {/* Failed actions */}
+        {phase === 'failed' && (
+          <div className="processing-overlay" style={{ pointerEvents: 'auto' }}>
+            <div className="processing-text">Try-on failed</div>
+            <div className="processing-sub">{status}</div>
+            <button className="try-again-btn try-again-btn-inline" onClick={backToCamera}>
+              Back to camera
+            </button>
+          </div>
+        )}
+      </div>
+      {/* — end .stage-frame — */}
 
       <div className="picker">
         {visibleList.map(g => (
