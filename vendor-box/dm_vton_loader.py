@@ -122,14 +122,27 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
         )
     sys.path.insert(0, str(repo_root))
 
-    warp_ckpt = path / "checkpoint_warp.pth"
-    gen_ckpt = path / "checkpoint_gen.pth"
-    if not warp_ckpt.exists() or not gen_ckpt.exists():
-        raise FileNotFoundError(
-            f"DM-VTON checkpoints missing at {path}. "
-            f"Expected: checkpoint_warp.pth, checkpoint_gen.pth. "
-            f"Run scripts/setup_dm_vton.sh."
+    # DM-VTON's Google Drive ships several .pt files under varying names
+    # (mobile_warp.pt, pf_warp.pt, checkpoint_warp.pth, etc. depending on
+    # the variant). Match by substring instead of exact filename.
+    def _find_ckpt(needle: str) -> Path:
+        candidates = (
+            sorted(path.glob(f"*{needle}*.pt"))
+            + sorted(path.glob(f"*{needle}*.pth"))
         )
+        if not candidates:
+            raise FileNotFoundError(
+                f"No *{needle}*.pt or *{needle}*.pth file found in {path}. "
+                f"Download DM-VTON checkpoints from "
+                f"https://drive.google.com/drive/folders/1wfWGsR0vWC5LrA26xhj92ec_GoCKV80A "
+                f"and place them in {path}."
+            )
+        return candidates[0]
+
+    warp_ckpt = _find_ckpt("warp")
+    gen_ckpt = _find_ckpt("gen")
+    log.info("found warp checkpoint: %s", warp_ckpt.name)
+    log.info("found gen checkpoint:  %s", gen_ckpt.name)
 
     # DM-VTON ships its own model definitions
     from models.warp_modules.mobile_aflow_net import MobileAFlowNet  # adjust if module path differs

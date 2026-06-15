@@ -41,33 +41,38 @@ say "3/3 — pretrained checkpoints"
 TARGET="${VENDORBOX_MODELS_DIR:-$HERE/data/models}/dm-vton"
 mkdir -p "$TARGET"
 
-REQUIRED=(checkpoint_warp.pth checkpoint_gen.pth)
-MISSING=()
-for ckpt in "${REQUIRED[@]}"; do
-  if [[ -f "$TARGET/$ckpt" ]]; then
-    ok "  $ckpt present"
-  else
-    MISSING+=("$ckpt")
-  fi
-done
+# Match by substring — DM-VTON ships multiple checkpoint variants
+# (mobile_warp.pt, pf_warp.pt, checkpoint_warp.pth, etc.). The loader picks
+# whichever file matches *warp*.{pt,pth} and *gen*.{pt,pth}.
+HAVE_WARP=$(compgen -G "$TARGET/*warp*.pt"  >/dev/null && echo 1 || \
+             compgen -G "$TARGET/*warp*.pth" >/dev/null && echo 1 || echo 0)
+HAVE_GEN=$(compgen -G  "$TARGET/*gen*.pt"   >/dev/null && echo 1 || \
+             compgen -G "$TARGET/*gen*.pth"  >/dev/null && echo 1 || echo 0)
 
-if [[ ${#MISSING[@]} -eq 0 ]]; then
-  ok "all weights present"
+if [[ "$HAVE_WARP" == "1" && "$HAVE_GEN" == "1" ]]; then
+  ok "warp + gen checkpoints present"
+  for f in "$TARGET"/*warp*.pt "$TARGET"/*warp*.pth "$TARGET"/*gen*.pt "$TARGET"/*gen*.pth; do
+    [[ -f "$f" ]] && echo "    $(basename "$f")"
+  done
   say "DONE — DM-VTON ready. Restart uvicorn and check /healthz."
   exit 0
 fi
 
-warn "missing weight files: ${MISSING[*]}"
+MISSING=()
+[[ "$HAVE_WARP" == "1" ]] || MISSING+=("*warp*.pt")
+[[ "$HAVE_GEN"  == "1" ]] || MISSING+=("*gen*.pt")
+
+warn "missing checkpoint patterns: ${MISSING[*]}"
 cat <<EOF
 
 DM-VTON is an OPTIONAL quality upgrade for LIVE mode (~50ms/frame instead
 of the IDM-VTON fallback at ~3-5s/frame). The service runs fine without it.
 
 If you want the full DM-VTON speed later:
-  1. Open https://github.com/KiseKloset/DM-VTON#-pretrained-models
-  2. Download the checkpoints from the Google Drive links there
+  1. Open https://drive.google.com/drive/folders/1wfWGsR0vWC5LrA26xhj92ec_GoCKV80A
+  2. Download the .pt files (e.g. mobile_warp.pt + mobile_gen.pt, or whatever
+     the latest variant is — the loader matches by name substring)
   3. Place them at: $TARGET
-       (filenames: ${MISSING[*]})
   4. Restart uvicorn — /healthz will then report "dm_vton": true
 
 For now, this script is exiting successfully. The /ws/live endpoint will
