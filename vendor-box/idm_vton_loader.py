@@ -149,10 +149,35 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
 
     # IDM-VTON's preprocess code uses RELATIVE paths like
     #   Path(__file__).parents[2] / 'ckpt/humanparsing/parsing_atr.onnx'
-    # which resolves to IDM-VTON/ckpt/humanparsing/... Our weights live
-    # under data/models/idm-vton/<subdir>. Symlink IDM-VTON/ckpt to our
-    # weights dir so the hardcoded paths resolve.
+    # which resolves to IDM-VTON/ckpt/humanparsing/...  Our weights live
+    # under data/models/idm-vton/<subdir>, so we symlink IDM-VTON/ckpt
+    # to that location.
+    #
+    # CAVEAT: the upstream IDM-VTON repo ships Git LFS stubs under ckpt/,
+    # so `git clone` (without lfs) leaves a real ckpt/ directory full of
+    # 24-31-byte pointer files. We have to replace the stub directory
+    # with the symlink, not skip-when-present.
+    import shutil
     ckpt_link = repo_root / "ckpt"
+    if ckpt_link.is_symlink():
+        target = ckpt_link.resolve()
+        if target != path.resolve():
+            ckpt_link.unlink()  # was pointing at the wrong place
+    if ckpt_link.exists() and not ckpt_link.is_symlink():
+        # Real directory (Git LFS stubs). Verify it's NOT real weights,
+        # then nuke it. A real weights dir would have a file > 10 MB inside.
+        max_size = max(
+            (f.stat().st_size for f in ckpt_link.rglob("*") if f.is_file()),
+            default=0,
+        )
+        if max_size > 10_000_000:
+            log.warning(
+                "ckpt/ has real weights inside (%d bytes max) — leaving it alone",
+                max_size,
+            )
+        else:
+            log.info("removing LFS-stub ckpt/ (max file %d bytes)", max_size)
+            shutil.rmtree(ckpt_link)
     if not ckpt_link.exists():
         try:
             ckpt_link.symlink_to(path, target_is_directory=True)
@@ -160,7 +185,7 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
         except OSError as e:
             raise RuntimeError(
                 f"Couldn't create symlink {ckpt_link} -> {path}: {e}. "
-                f"Manually run:  ln -s {path} {ckpt_link}"
+                f"Manually run:  rm -rf {ckpt_link} && ln -s {path} {ckpt_link}"
             )
 
     # yisol/IDM-VTON on HuggingFace ships subdirs at the repo root:
