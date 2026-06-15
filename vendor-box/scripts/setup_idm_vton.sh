@@ -54,20 +54,48 @@ say "3/3 — download model weights (~10 GB, can take 10-20 min)"
 TARGET="${VENDORBOX_MODELS_DIR:-$HERE/data/models}/idm-vton"
 mkdir -p "$TARGET"
 
-# Prefer `hf` (new HF CLI from huggingface_hub >=0.27). Fall back to legacy
-# `huggingface-cli` for older installs, then to Python snapshot_download.
-# Note: the new `hf` CLI's --exclude has different parsing rules — easier to
-# just download everything. The .md/.txt files are a few KB total.
+# HF rate-limits unauthenticated downloads aggressively (esp. for large
+# repos). Check the token is set up — either via HF_TOKEN env var or a
+# cached login in ~/.cache/huggingface/token.
+TOKEN_CACHE="$HOME/.cache/huggingface/token"
+if [[ -z "${HF_TOKEN:-}" && ! -s "$TOKEN_CACHE" ]]; then
+  cat <<EOF
+
+HuggingFace authentication required for the IDM-VTON download. Without a
+token, requests hit aggressive rate limits.
+
+To authenticate, either:
+
+  Option A — login once (recommended):
+    hf auth login
+    # paste a token from https://huggingface.co/settings/tokens
+    # (Type: 'Read' is sufficient. No special scopes needed.)
+
+  Option B — pass the token as an env var each run:
+    export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+    ./scripts/setup_idm_vton.sh
+
+If you don't have an HF account, create one at https://huggingface.co/join
+then generate a read token at https://huggingface.co/settings/tokens.
+
+EOF
+  die "no HF token found"
+fi
+
+# Prefer `hf` (new CLI). Fall back to legacy 'huggingface-cli', then
+# Python's snapshot_download. All three pick up HF_TOKEN automatically.
 if command -v hf > /dev/null; then
   hf download yisol/IDM-VTON --local-dir "$TARGET"
 elif command -v huggingface-cli > /dev/null; then
   huggingface-cli download yisol/IDM-VTON --local-dir "$TARGET"
 else
   python - <<PY
+import os
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id="yisol/IDM-VTON",
     local_dir="$TARGET",
+    token=os.environ.get("HF_TOKEN"),
 )
 PY
 fi
