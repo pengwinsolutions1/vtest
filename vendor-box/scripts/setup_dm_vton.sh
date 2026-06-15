@@ -51,10 +51,16 @@ echo "  installing $CUPY_SPEC"
 # in this stack because mediapipe + DM-VTON's own ABI expect 1.x. Cap opencv
 # to <4.13 to keep the numpy 1 environment consistent.
 # tifffile (pulled in by scikit-image) has the same story — pin <2025 wheel.
+# Explicit numpy<2 pin here too — if some other dep tries to upgrade numpy
+# during this install, cupy 12.x will silently break (it needs <1.29).
+# All opencv variants (headless, contrib) need to stay <4.13 for the same
+# reason. Same with tifffile.
 pip install \
   "$CUPY_SPEC" \
+  'numpy>=1.26,<2' \
   'tensorboard' \
   'opencv-python-headless>=4.9,<4.13' \
+  'opencv-contrib-python<4.13' \
   'scikit-image>=0.22,<0.25' \
   'tifffile<2025' \
   'pillow>=10.0' \
