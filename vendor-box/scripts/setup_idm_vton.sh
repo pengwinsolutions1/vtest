@@ -43,10 +43,11 @@ pip install \
   'fvcore' \
   'iopath' \
   'matplotlib' \
-  'opencv-python-headless>=4.9' \
+  'opencv-python-headless>=4.9,<4.13' \
   'scikit-image' \
   'scipy' \
-  'tqdm'
+  'tqdm' \
+  'onnxruntime-gpu'   # IDM-VTON's human-parsing model runs via ONNX Runtime
 ok "IDM-VTON extras installed"
 
 # ── 3. Download weights from HuggingFace ──────────────────────────────────
