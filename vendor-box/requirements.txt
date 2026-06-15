@@ -40,10 +40,10 @@ safetensors>=0.4
 einops>=0.7
 
 # ── Body parsing (for VTON pre-processing) ────────────────────────────────
-# Pin <0.11 — newer mediapipe dropped the `mediapipe.solutions.*` API in
-# favour of the more verbose `mediapipe.tasks.*`. The dm_vton_loader uses
-# `mp.solutions.pose.Pose(...)` for the torso polygon detection.
-mediapipe>=0.10.14,<0.11
+# Any modern 0.10.x or 0.11.x works — dm_vton_loader uses the Tasks API
+# (`mediapipe.tasks.python.vision.PoseLandmarker`), which is the supported
+# replacement for the removed legacy `mediapipe.solutions.pose` namespace.
+mediapipe>=0.10.14
 
 # ── HuggingFace model downloads ───────────────────────────────────────────
 huggingface_hub>=0.25

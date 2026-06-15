@@ -61,6 +61,7 @@ class DMVTONPipe:
         import torch
         from torchvision import transforms
         import cv2
+        import mediapipe as mp
 
         H_MODEL, W_MODEL = 256, 192   # DM-VTON's native resolution
         orig_w, orig_h = frame.size
@@ -68,7 +69,9 @@ class DMVTONPipe:
         # ── 1. Pose detection on the FULL-RES frame ─────────────────
         frame_full_rgb = frame.convert("RGB")
         frame_full = np.array(frame_full_rgb)
-        pose_results = self.pose.process(frame_full)
+        # New MediaPipe Tasks API takes mp.Image not raw numpy
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_full)
+        pose_results = self.pose.detect(mp_image)
 
         # ── 2. DM-VTON inference at the model's native res ──────────
         frame_small = frame_full_rgb.resize((W_MODEL, H_MODEL))
@@ -118,16 +121,22 @@ class DMVTONPipe:
         """Return a 4-vertex int32 polygon outlining where the garment goes,
         in (x, y) pixel coords, or None if no usable pose is detected.
         Caches the last good polygon so transient pose-loss frames keep the
-        garment painted instead of flicking off."""
-        if not pose_results.pose_landmarks:
-            return self._last_polygon  # may be None on the first frame
-        lms = pose_results.pose_landmarks.landmark
-        # MediaPipe Pose landmark indices:
+        garment painted instead of flicking off.
+
+        Note: new Tasks API returns `pose_landmarks` as List[List[Landmark]] —
+        one inner list per detected person. We just use the first person.
+        """
+        plm = getattr(pose_results, "pose_landmarks", None) or []
+        if not plm:
+            return self._last_polygon
+        lms = plm[0]  # first detected person's landmarks
+        # MediaPipe Pose landmark indices (same as solutions API):
         #   11 = left shoulder, 12 = right shoulder
         #   23 = left hip,      24 = right hip
         def pt(i):
             return (int(lms[i].x * w), int(lms[i].y * h))
-        def vis(i): return lms[i].visibility
+        def vis(i):
+            return getattr(lms[i], "visibility", 1.0)
 
         if min(vis(11), vis(12), vis(23), vis(24)) < 0.4:
             return self._last_polygon
@@ -154,12 +163,35 @@ class DMVTONPipe:
         return polygon
 
 
+def _ensure_pose_landmarker_task(parent_dir: Path) -> Path:
+    """Download MediaPipe's pose_landmarker_lite.task file if not on disk.
+    ~6 MB, hosted on Google's CDN — reachable even when HF Hub isn't."""
+    task_path = parent_dir / "pose_landmarker_lite.task"
+    if task_path.exists() and task_path.stat().st_size > 100_000:
+        return task_path
+    parent_dir.mkdir(parents=True, exist_ok=True)
+    import urllib.request
+    url = (
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+        "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+    )
+    log.info("downloading pose_landmarker_lite.task from %s", url)
+    urllib.request.urlretrieve(url, str(task_path))
+    log.info("pose_landmarker_lite.task → %s (%d bytes)",
+             task_path, task_path.stat().st_size)
+    return task_path
+
+
 def load_dm_vton_trt(path: Path) -> DMVTONPipe:
     """Load DM-VTON's `DMVTONPipeline` from the cloned ../DM-VTON/ repo +
-    initialise a single-person MediaPipe Pose for torso localisation."""
+    initialise the new MediaPipe Tasks PoseLandmarker for torso localisation.
+
+    (The legacy `mediapipe.solutions.pose` API was removed in 0.10.20+; the
+    Tasks API is the supported way now.)
+    """
     import torch
-    # Newer mediapipe lazy-loads `solutions`; explicit submodule import is safer.
-    from mediapipe.solutions import pose as mp_pose
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
 
     repo_root = Path(__file__).resolve().parent / "DM-VTON"
     if not (repo_root / "pipelines").exists():
@@ -168,7 +200,6 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
         )
     sys.path.insert(0, str(repo_root))
 
-    # Match by substring — handle whatever naming the Drive variant uses
     def _find(needle: str) -> Path:
         candidates = sorted(path.glob(f"*{needle}*.pt")) + sorted(path.glob(f"*{needle}*.pth"))
         if not candidates:
@@ -186,7 +217,6 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
     from pipelines import DMVTONPipeline
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # FP32 — partial .half() left dtype mismatches inside DM-VTON's submodules
     dtype = torch.float32
 
     log.info("instantiating DMVTONPipeline…")
@@ -195,14 +225,14 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
         checkpoints={"warp": str(warp_ckpt), "gen": str(gen_ckpt)},
     ).to(device).eval()
 
-    log.info("loading MediaPipe Pose…")
-    pose = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=1,
-        smooth_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+    log.info("loading MediaPipe PoseLandmarker (tasks API)…")
+    task_file = _ensure_pose_landmarker_task(path.parent / "mediapipe")
+    options = mp_vision.PoseLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=str(task_file)),
+        running_mode=mp_vision.RunningMode.IMAGE,
+        num_poses=1,
     )
+    pose_detector = mp_vision.PoseLandmarker.create_from_options(options)
 
-    log.info("DM-VTON pipeline ready (PyTorch %s on %s, with MediaPipe Pose)", dtype, device)
-    return DMVTONPipe(pipeline=pipeline, device=device, tensor_dtype=dtype, pose=pose)
+    log.info("DM-VTON pipeline ready (PyTorch %s on %s, with MediaPipe PoseLandmarker)", dtype, device)
+    return DMVTONPipe(pipeline=pipeline, device=device, tensor_dtype=dtype, pose=pose_detector)
