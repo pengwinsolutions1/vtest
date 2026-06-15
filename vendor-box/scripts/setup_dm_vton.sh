@@ -28,28 +28,33 @@ fi
 
 # ── 2. Install DM-VTON extras ──────────────────────────────────────────────
 say "2/3 — install DM-VTON extras"
-# cupy is a CuPy-CUDA GPU array library that DMVTONPipeline uses internally
-# for parts of the warping math. Wheel name depends on the CUDA major version.
-# Try to detect from nvidia-smi; default to cu12 (current vendor box target).
-CUPY_PKG="cupy-cuda12x"
+# cupy is a CuPy-CUDA GPU array library that DM-VTON's correlation kernel
+# uses internally for the warping math. Wheel name depends on the CUDA
+# major version (cu11 vs cu12).
+#
+# IMPORTANT: pin to <13. DM-VTON uses cupy.cuda.compile_with_cache, which
+# was deprecated in CuPy 11.0 and REMOVED in CuPy 13.0. With CuPy 13+ you
+# get an AttributeError at the first frame. CuPy 12.x still has the old
+# API (deprecation warnings, but functional).
+CUPY_SPEC="cupy-cuda12x<13"
 if command -v nvidia-smi > /dev/null; then
   CUDA_MAJ=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+' | grep -oE '[0-9]+' || true)
   case "$CUDA_MAJ" in
-    11) CUPY_PKG="cupy-cuda11x" ;;
-    12) CUPY_PKG="cupy-cuda12x" ;;
-    *)  echo "  (couldn't detect CUDA major version, defaulting to $CUPY_PKG)" ;;
+    11) CUPY_SPEC="cupy-cuda11x<13" ;;
+    12) CUPY_SPEC="cupy-cuda12x<13" ;;
+    *)  echo "  (couldn't detect CUDA major version, defaulting to $CUPY_SPEC)" ;;
   esac
 fi
-echo "  installing $CUPY_PKG"
+echo "  installing $CUPY_SPEC"
 
 pip install \
-  "$CUPY_PKG" \
+  "$CUPY_SPEC" \
   'tensorboard' \
   'opencv-python-headless>=4.9' \
   'scikit-image' \
   'pillow>=10.0' \
   'tqdm'
-ok "DM-VTON extras installed (incl. $CUPY_PKG)"
+ok "DM-VTON extras installed (incl. $CUPY_SPEC)"
 
 # ── 3. Pretrained checkpoints (MANUAL STEP) ────────────────────────────────
 say "3/3 — pretrained checkpoints"
