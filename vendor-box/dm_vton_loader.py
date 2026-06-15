@@ -158,7 +158,8 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
     """Load DM-VTON's `DMVTONPipeline` from the cloned ../DM-VTON/ repo +
     initialise a single-person MediaPipe Pose for torso localisation."""
     import torch
-    import mediapipe as mp
+    # Newer mediapipe lazy-loads `solutions`; explicit submodule import is safer.
+    from mediapipe.solutions import pose as mp_pose
 
     repo_root = Path(__file__).resolve().parent / "DM-VTON"
     if not (repo_root / "pipelines").exists():
@@ -195,7 +196,7 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
     ).to(device).eval()
 
     log.info("loading MediaPipe Pose…")
-    pose = mp.solutions.pose.Pose(
+    pose = mp_pose.Pose(
         static_image_mode=False,
         model_complexity=1,
         smooth_landmarks=True,
