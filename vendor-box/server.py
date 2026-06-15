@@ -88,19 +88,31 @@ def _load_pipelines() -> None:
                 log.exception("%s load failed: %s", name, e)
             return None
 
-        # ── IDM-VTON (snapshot still) ────────────────────────────────
-        log.info("loading IDM-VTON…")
-        PIPES.idm_vton = _try_load("IDM-VTON", lambda: (
-            __import__("idm_vton_loader").load_idm_vton(MODELS_DIR / "idm-vton", device="cuda")
-        ))
-        if PIPES.idm_vton: log.info("IDM-VTON ready")
+        # ── IDM-VTON (snapshot still) — DISABLED by default ──────────
+        # Snapshot/photo-booth UX is not in the customer page anymore. IDM-VTON
+        # also conflicts with newer diffusers (it imports the now-internal
+        # PositionNet class). Set LOAD_IDM_VTON=1 to opt in if you want
+        # snapshot mode back; otherwise we skip and don't even import.
+        if os.environ.get("LOAD_IDM_VTON") == "1":
+            log.info("loading IDM-VTON…")
+            PIPES.idm_vton = _try_load("IDM-VTON", lambda: (
+                __import__("idm_vton_loader").load_idm_vton(MODELS_DIR / "idm-vton", device="cuda")
+            ))
+            if PIPES.idm_vton: log.info("IDM-VTON ready")
+        else:
+            log.info("IDM-VTON: skipped (LIVE-only mode; set LOAD_IDM_VTON=1 to enable)")
 
-        # ── Wan 2.1 i2v (snapshot video) ─────────────────────────────
-        log.info("loading Wan 2.1 i2v…")
-        PIPES.wan_i2v = _try_load("Wan 2.1", lambda: (
-            __import__("wan21_loader").load_wan_i2v(MODELS_DIR / "wan2.1", device="cuda")
-        ))
-        if PIPES.wan_i2v: log.info("Wan 2.1 i2v ready")
+        # ── Wan 2.1 i2v (snapshot video) — DISABLED by default ───────
+        # Video animation only makes sense layered on top of a snapshot still.
+        # Skip in the LIVE-only product. Set LOAD_WAN_I2V=1 to opt in.
+        if os.environ.get("LOAD_WAN_I2V") == "1":
+            log.info("loading Wan 2.1 i2v…")
+            PIPES.wan_i2v = _try_load("Wan 2.1", lambda: (
+                __import__("wan21_loader").load_wan_i2v(MODELS_DIR / "wan2.1", device="cuda")
+            ))
+            if PIPES.wan_i2v: log.info("Wan 2.1 i2v ready")
+        else:
+            log.info("Wan 2.1: skipped (LIVE-only mode; set LOAD_WAN_I2V=1 to enable)")
 
         # ── DM-VTON (live streaming) ─────────────────────────────────
         log.info("loading DM-VTON (TensorRT)…")
