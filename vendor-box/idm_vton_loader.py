@@ -279,14 +279,16 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
         unet_encoder=unet_encoder,
         torch_dtype=dtype,
     )
-    # CPU offloading — IDM-VTON's full SDXL stack (UNet + UNet encoder + VAE
-    # + 2 text encoders + image encoder) is ~14 GB at FP16. On a 16 GB card
-    # the activation tensors don't fit. enable_model_cpu_offload() keeps each
-    # component on CPU until it's the active one, then swaps it to GPU. ~50%
-    # slower per inference but fits in ~8 GB peak VRAM.
+    # CPU offloading on tight VRAM (16 GB cards). enable_model_cpu_offload
+    # only hooks top-level modules (text_encoder, unet, vae) — it doesn't
+    # catch submodules like unet.encoder_hid_proj (the IP-Adapter resampler).
+    # That submodule gets called directly by the pipeline, hits CPU weights
+    # against CUDA inputs, RuntimeError. enable_sequential_cpu_offload hooks
+    # every submodule, eliminating the device mismatch at the cost of more
+    # CPU↔GPU transfers per step (~2-3x slower than model offload).
     if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory < 20 * 1024**3:
-        log.info("enabling CPU offload (GPU < 20 GB — fits in lower VRAM, ~50%% slower)")
-        pipe.enable_model_cpu_offload()
+        log.info("enabling SEQUENTIAL CPU offload (GPU < 20 GB — slower, but no device mismatches)")
+        pipe.enable_sequential_cpu_offload()
     else:
         pipe.to(device)
 
