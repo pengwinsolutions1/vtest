@@ -37,6 +37,7 @@ class IDMVTONPipe:
     openpose_model: Any             # OpenPose
     device: str
     tensor_dtype: Any               # torch.float16 normally
+    _last_crop: Any = None          # (orig_w, orig_h, left, top, tw, th)
 
     def run(
         self,
@@ -62,9 +63,29 @@ class IDMVTONPipe:
         import apply_net
 
         idm_category = CATEGORY_MAP[category]
-        TARGET = (768, 1024)   # IDM-VTON native resolution
-        human_img = selfie.convert("RGB").resize(TARGET)
-        garm_img  = garment.convert("RGB").resize(TARGET)
+        TARGET = (768, 1024)   # IDM-VTON native resolution (3:4 aspect)
+
+        # ─── Auto-crop the selfie to 3:4 BEFORE resizing ────────────────
+        # IDM-VTON's pipeline is trained on fashion portraits (3:4). Most
+        # webcams ship 16:9, and a naive .resize((768,1024)) stretches a
+        # body vertically by ~33% — OpenPose then sees a squashed shape
+        # and finds 0 bodies (IndexError on pose['bodies']['subset'][0]).
+        # Center-crop to 3:4 first so the body looks human.
+        selfie_rgb = selfie.convert("RGB")
+        w, h = selfie_rgb.size
+        target_w = min(w, int(h * 3 / 4))
+        target_h = min(h, int(w * 4 / 3))
+        left = (w - target_w) // 2
+        top = (h - target_h) // 2
+        selfie_cropped = selfie_rgb.crop((left, top, left + target_w, top + target_h))
+        crop_size = selfie_cropped.size
+        human_img = selfie_cropped.resize(TARGET)
+        # Remember the crop offsets — we paste the AI result back into the
+        # original-aspect frame at these coords so the customer still sees
+        # the full webcam frame, not a cropped one.
+        self._last_crop = (w, h, left, top, target_w, target_h)
+
+        garm_img = garment.convert("RGB").resize(TARGET)
 
         log.info("running pose + parsing pre-processing…")
         keypoints = self.openpose_model(human_img.resize((384, 512)))
@@ -138,7 +159,16 @@ class IDMVTONPipe:
                 ip_adapter_image=garm_img.resize(TARGET),
                 guidance_scale=guidance_scale,
             )[0]
-        return images[0]
+
+        # Paste the AI result back into the original-aspect-ratio frame so
+        # the customer's surroundings (room, background outside the crop)
+        # stay visible — otherwise we'd return a 3:4 image into a 16:9 UI.
+        result_img = images[0]
+        ow, oh, left, top, tw, th = self._last_crop
+        result_in_crop = result_img.resize((tw, th))
+        canvas = selfie.convert("RGB").copy()
+        canvas.paste(result_in_crop, (left, top))
+        return canvas
 
 
 def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
