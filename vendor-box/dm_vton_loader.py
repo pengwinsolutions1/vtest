@@ -29,29 +29,48 @@ from PIL import Image
 log = logging.getLogger("dm-vton")
 
 
-# How far below the hips the torso polygon extends, as a fraction of the
-# shoulder→hip distance. Longer garments need more bottom margin.
+# Per-category polygon geometry (all values are fractions of body landmark
+# distances so they scale with the user's size on screen). Tune these to
+# adjust how the garment sits on the body.
+#
+# HEM_EXTEND:   fraction of shoulder→hip distance to extend below the hips
+# COLLAR_RISE:  fraction of shoulder→hip distance to extend above shoulders
+#               (positive = up toward chin, negative = below shoulder line)
+# SIDE_PAD:     extra width on each side, as fraction of shoulder span
+# HAS_SLEEVES:  true for tops → polygon includes shoulder→elbow regions so
+#               the rendered "dress" follows raised arms
+
 HEM_EXTEND: dict[str, float] = {
-    "top":    0.40,
-    "bottom": 2.20,
-    "dress":  2.30,   # extends below knees for proper dress length
+    "top":    0.55,
+    "bottom": 2.40,
+    "dress":  2.80,   # well past knees for floor-length dresses
 }
 COLLAR_RISE: dict[str, float] = {
-    "top":    0.22,
+    "top":    0.32,
     "bottom": -0.95,
-    "dress":  0.28,   # collar a bit higher so the dress looks worn, not stuck on
+    "dress":  0.38,   # bring the collar up close to the chin / neckline
 }
-# Extra width on each side, as fraction of shoulder span. Bigger = the dress
-# extends further past your shoulders (more flowy / draped look).
 SIDE_PAD: dict[str, float] = {
-    "top":    0.30,
-    "bottom": 0.30,
-    "dress":  0.40,
+    "top":    0.45,
+    "bottom": 0.40,
+    "dress":  0.55,   # generous so the dress falls outside the shoulder line
 }
+HAS_SLEEVES: dict[str, bool] = {
+    "top":    True,
+    "bottom": False,
+    "dress":  True,    # most dresses we ship have sleeves visible
+}
+# How far OUT from the elbow to push the sleeve outline, fraction of shoulder
+# span. Higher = baggier sleeves.
+SLEEVE_OUTSET: float = 0.35
 
 # Polygon smoothing — how fast the polygon catches up to a new pose detection.
-# 1.0 = no smoothing (snaps each frame), 0.3 = lazy & smooth, 0.6 = balanced.
+# Lower = smoother + laggier; higher = snappier + jitter-ier.
 POLYGON_SMOOTH_ALPHA = 0.55
+
+# Pixels of dilation to apply to the body silhouette mask before intersecting
+# with the polygon. Closes thin gaps where the segmenter undercut the body.
+BODY_DILATE_PX = 4
 
 
 @dataclass
@@ -124,8 +143,11 @@ class DMVTONPipe:
             # No body in frame → just return the live webcam
             return frame_full_rgb
 
-        # EMA-smooth the polygon vertices to reduce frame-to-frame jitter
-        if self._smoothed_polygon is None:
+        # EMA-smooth the polygon vertices to reduce frame-to-frame jitter.
+        # Snap to the new polygon if the vertex count changed (e.g. category
+        # switched between has-sleeves and not-has-sleeves).
+        if (self._smoothed_polygon is None
+                or self._smoothed_polygon.shape != polygon.shape):
             self._smoothed_polygon = polygon.astype(np.float32)
         else:
             self._smoothed_polygon = (
@@ -145,9 +167,14 @@ class DMVTONPipe:
         # the mask follow the actual person outline (smooth, curved, not
         # square). Final mask = polygon ∩ body_silhouette.
         if body_mask is not None and body_mask.shape[:2] == (orig_h, orig_w):
-            # Soften the body silhouette edge so the composite blends instead of
-            # cutting hard at one-pixel boundaries
-            soft_body = cv2.GaussianBlur(body_mask, (15, 15), 0)
+            # Dilate the body silhouette by a few pixels so thin gaps in the
+            # segmenter output (around fingers, hair, etc.) don't leave the
+            # composite with little black holes where the AI dress should be.
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (BODY_DILATE_PX * 2 + 1, BODY_DILATE_PX * 2 + 1)
+            )
+            body_dilated = cv2.dilate(body_mask, kernel)
+            soft_body = cv2.GaussianBlur(body_dilated, (15, 15), 0)
             mask = poly_mask * soft_body
         else:
             mask = poly_mask
@@ -158,21 +185,25 @@ class DMVTONPipe:
         return Image.fromarray(composited.astype(np.uint8))
 
     def _build_torso_polygon(self, pose_results, category: str, w: int, h: int):
-        """Return a 4-vertex int32 polygon outlining where the garment goes,
-        in (x, y) pixel coords, or None if no usable pose is detected.
-        Caches the last good polygon so transient pose-loss frames keep the
-        garment painted instead of flicking off.
+        """Return an N-vertex int32 polygon outlining where the garment goes.
 
-        Note: new Tasks API returns `pose_landmarks` as List[List[Landmark]] —
-        one inner list per detected person. We just use the first person.
+        - 4-vertex (rectangle-ish) for dress / bottom / sleeveless: shoulders
+          outward to hips + extended hem
+        - 8-vertex for tops with sleeves: includes shoulder→elbow rectangles
+          on each arm so the garment follows the user's gestures
+
+        Caches the last good polygon so a transient pose-loss frame doesn't
+        flicker the dress off.
         """
         plm = getattr(pose_results, "pose_landmarks", None) or []
         if not plm:
             return self._last_polygon
-        lms = plm[0]  # first detected person's landmarks
-        # MediaPipe Pose landmark indices (same as solutions API):
-        #   11 = left shoulder, 12 = right shoulder
-        #   23 = left hip,      24 = right hip
+        lms = plm[0]
+        # MediaPipe Pose landmark indices:
+        #   11 L shoulder  12 R shoulder
+        #   13 L elbow     14 R elbow
+        #   15 L wrist     16 R wrist
+        #   23 L hip       24 R hip
         def pt(i):
             return (int(lms[i].x * w), int(lms[i].y * h))
         def vis(i):
@@ -190,15 +221,38 @@ class DMVTONPipe:
         collar_dy  = int(torso_h * COLLAR_RISE.get(category, 0.22))
         hem_dy     = int(torso_h * HEM_EXTEND.get(category, 2.00))
 
-        # Order matters for fillPoly — go around the polygon (CW or CCW).
-        # MediaPipe's "left" shoulder is on the SUBJECT's left, which appears
-        # on the screen RIGHT after the browser mirrors the selfie.
-        polygon = np.array([
-            [lsh[0] + side_pad, lsh[1] - collar_dy],  # subject's left shoulder, outset
-            [rsh[0] - side_pad, rsh[1] - collar_dy],  # subject's right shoulder, outset
-            [rhp[0] - side_pad, rhp[1] + hem_dy],     # below subject's right hip
-            [lhp[0] + side_pad, lhp[1] + hem_dy],     # below subject's left hip
-        ], dtype=np.int32)
+        if not HAS_SLEEVES.get(category, False):
+            # ── Simple 4-vertex polygon (dress, sleeveless top, bottom) ──
+            polygon = np.array([
+                [lsh[0] + side_pad, lsh[1] - collar_dy],  # subject's left shoulder, outset up
+                [rsh[0] - side_pad, rsh[1] - collar_dy],  # subject's right shoulder, outset up
+                [rhp[0] - side_pad, rhp[1] + hem_dy],     # below subject's right hip
+                [lhp[0] + side_pad, lhp[1] + hem_dy],     # below subject's left hip
+            ], dtype=np.int32)
+        else:
+            # ── 8-vertex polygon with sleeves (top + most dresses) ──
+            # Add elbow points so the polygon follows the arms when the user
+            # raises them. If an elbow isn't visible, fall back to the shoulder
+            # position so the sleeve degenerates back to a normal top.
+            if vis(13) > 0.4 and vis(14) > 0.4:
+                lel, rel = pt(13), pt(14)
+            else:
+                lel, rel = lsh, rsh
+            sleeve_out = int(shoulder_span * SLEEVE_OUTSET)
+
+            # Build polygon clockwise starting from the subject's left shoulder
+            # (= screen-right after the mirror). Order matters for fillPoly.
+            polygon = np.array([
+                [lsh[0] + side_pad, lsh[1] - collar_dy],          # L shoulder cap (up + out)
+                [lel[0] + sleeve_out, lel[1]],                     # L elbow (outer sleeve)
+                [lel[0], lel[1] + sleeve_out // 3],                # L elbow (inner sleeve)
+                [lhp[0] + side_pad, lhp[1] + hem_dy],              # below L hip
+                [rhp[0] - side_pad, rhp[1] + hem_dy],              # below R hip
+                [rel[0], rel[1] + sleeve_out // 3],                # R elbow (inner)
+                [rel[0] - sleeve_out, rel[1]],                     # R elbow (outer)
+                [rsh[0] - side_pad, rsh[1] - collar_dy],           # R shoulder cap
+            ], dtype=np.int32)
+
         self._last_polygon = polygon
         return polygon
 
