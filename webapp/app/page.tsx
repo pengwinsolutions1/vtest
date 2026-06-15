@@ -116,7 +116,10 @@ const GENDER_EMOJI:  Record<Gender, string> = { men: '🧔', women: '👩', unis
 
 type Phase = 'live' | 'preparing' | 'capturing' | 'submitting' | 'processing' | 'result' | 'failed';
 
-const POLL_INTERVAL_MS = 1500;
+// Drop poll interval from 1500 -> 500 so the result image appears within
+// ~0.5s of the vendor box finishing instead of waiting up to ~1.5s. Adds
+// negligible load (one tiny GET every half-second vs every 1.5s).
+const POLL_INTERVAL_MS = 500;
 // Customer must stay well-framed for this many consecutive pose results
 // before the countdown starts. ~30 fps × 0.4s ≈ 12 frames.
 const FRAMING_HOLD_FRAMES = 12;

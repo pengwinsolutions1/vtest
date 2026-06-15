@@ -18,11 +18,27 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from PIL import Image
+
+# Silence noisy library deprecation warnings that we can't fix from our side.
+# IDM-VTON / detectron2 / transformers / diffusers all use APIs that PyTorch
+# has deprecated; the message floods the log every inference with no
+# actionable info for the operator.
+warnings.filterwarnings("ignore", category=FutureWarning,
+                        module=r"transformers\..*")
+warnings.filterwarnings("ignore", category=FutureWarning,
+                        module=r"diffusers\..*")
+warnings.filterwarnings("ignore", category=FutureWarning,
+                        message=r".*weights_only.*")
+warnings.filterwarnings("ignore", category=FutureWarning,
+                        message=r".*_register_pytree_node.*")
+warnings.filterwarnings("ignore", category=UserWarning,
+                        message=r".*meshgrid.*")
 
 log = logging.getLogger("idm-vton")
 
@@ -175,19 +191,17 @@ class IDMVTONPipe:
                 guidance_scale=guidance_scale,
             )[0]
 
-        # Free up VRAM + Python state before returning. Without this,
-        # fragments accumulate across inferences. Explicitly del every
-        # intermediate tensor — Python's GC alone doesn't reliably reach
-        # them during a hot loop.
+        # Free up VRAM before returning. Explicit del on every intermediate
+        # tensor + empty_cache + synchronize. (Used to call gc.collect()
+        # here too — costs ~0.5-1s of wall-clock with no observable benefit
+        # over Python's refcount-driven cleanup. Dropped.)
         result_img = images[0]
         del images, pose_tensor, garm_tensor
         del prompt_embeds, neg_prompt_embeds, pooled_prompt_embeds
         del neg_pooled_prompt_embeds, prompt_embeds_c
         del generator
-        import gc
-        gc.collect()
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()   # block until all queued GPU ops complete
+        torch.cuda.synchronize()   # block until queued GPU ops complete
         return result_img
 
 
