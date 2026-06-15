@@ -137,7 +137,7 @@ class IDMVTONPipe:
 
         log.info("running SDXL TryonPipeline (%d steps)…", n_steps)
         device = self.device
-        with torch.no_grad(), torch.cuda.amp.autocast():
+        with torch.no_grad(), torch.amp.autocast("cuda"):
             prompt = f"model is wearing {garment_description}"
             negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
             (
@@ -175,17 +175,19 @@ class IDMVTONPipe:
                 guidance_scale=guidance_scale,
             )[0]
 
-        # Free up VRAM before returning. Without this, fragments accumulate
-        # across consecutive inferences and the second call can hit OOM or
-        # silently stall the worker thread (user reported "not responding"
-        # after the first photo). gc.collect() finalises Python objects
-        # holding tensor refs; empty_cache() returns reserved memory to
-        # the driver.
+        # Free up VRAM + Python state before returning. Without this,
+        # fragments accumulate across inferences. Explicitly del every
+        # intermediate tensor — Python's GC alone doesn't reliably reach
+        # them during a hot loop.
         result_img = images[0]
-        del images
+        del images, pose_tensor, garm_tensor
+        del prompt_embeds, neg_prompt_embeds, pooled_prompt_embeds
+        del neg_pooled_prompt_embeds, prompt_embeds_c
+        del generator
         import gc
         gc.collect()
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()   # block until all queued GPU ops complete
         return result_img
 
 
