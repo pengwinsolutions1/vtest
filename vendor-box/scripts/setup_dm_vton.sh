@@ -64,6 +64,7 @@ pip install \
   'numpy>=1.26,<2' \
   'nvidia-cuda-nvrtc-cu12' \
   'tensorboard' \
+  'mediapipe>=0.10.14,<0.11' \
   'opencv-python-headless>=4.9,<4.13' \
   'opencv-contrib-python<4.13' \
   'scikit-image>=0.22,<0.25' \
