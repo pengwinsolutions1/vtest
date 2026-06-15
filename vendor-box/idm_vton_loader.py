@@ -50,79 +50,94 @@ class IDMVTONPipe:
     ) -> Image.Image:
         """One photoreal try-on inference. ~15-25 sec on RTX 4080.
 
-        Returns the customer photo with the garment composited photoreally.
+        Port of gradio_demo/app.py::start_tryon — same preprocessing chain
+        (OpenPose + HumanParsing + DensePose via detectron2.apply_net), same
+        SDXL pipeline call.
         """
+        import os
         import torch
         from torchvision import transforms
+        from detectron2.data.detection_utils import convert_PIL_to_numpy, _apply_exif_orientation
+        from utils_mask import get_mask_location
+        import apply_net
 
         idm_category = CATEGORY_MAP[category]
+        TARGET = (768, 1024)   # IDM-VTON native resolution
+        human_img = selfie.convert("RGB").resize(TARGET)
+        garm_img  = garment.convert("RGB").resize(TARGET)
 
-        # Resize inputs to 768×1024 (IDM-VTON's native resolution)
-        TARGET = (768, 1024)
-        selfie_resized = selfie.convert("RGB").resize(TARGET)
-        garment_resized = garment.convert("RGB").resize(TARGET)
-
-        # ─── Pre-process the human photo ─────────────────────────────
         log.info("running pose + parsing pre-processing…")
-        # OpenPose: 18-keypoint stick figure on a black background
-        keypoints = self.openpose_model(selfie_resized.resize((384, 512)))
-        # HumanParsing: per-pixel body region labels (arms, torso, face, ...)
-        parsed_image, _ = self.parsing_model(selfie_resized.resize((384, 512)))
+        keypoints = self.openpose_model(human_img.resize((384, 512)))
+        model_parse, _ = self.parsing_model(human_img.resize((384, 512)))
+        mask, mask_gray = get_mask_location("hd", idm_category, model_parse, keypoints)
+        mask = mask.resize(TARGET)
 
-        # Agnostic mask: the region where the new garment will be painted in.
-        # For dresses → torso + upper legs. For top → torso + upper arms. Etc.
-        # IDM-VTON ships a helper for this.
-        # get_mask_location lives in gradio_demo/utils_mask.py — the IDM-VTON
-        # repo doesn't expose it as a top-level package, so we import via the
-        # gradio_demo dir path that we added to sys.path in load_idm_vton().
-        from utils_mask import get_mask_location
-        agnostic_mask_pil, agnostic_mask = get_mask_location(
-            "hd", idm_category, parsed_image.resize((384, 512)), keypoints,
-        )
-        agnostic_mask = agnostic_mask_pil.resize(TARGET)
+        log.info("running DensePose (detectron2)…")
+        # apply_net's parse_args uses RELATIVE paths './configs/...' and
+        # './ckpt/densepose/...'. Must chdir to IDM-VTON/ before invoking.
+        repo_root = Path(__file__).resolve().parent / "IDM-VTON"
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(repo_root)
+            human_img_arg = _apply_exif_orientation(human_img.resize((384, 512)))
+            human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
+            args = apply_net.create_argument_parser().parse_args((
+                "show",
+                "./configs/densepose_rcnn_R_50_FPN_s1x.yaml",
+                "./ckpt/densepose/model_final_162be9.pkl",
+                "dp_segm", "-v",
+                "--opts", "MODEL.DEVICE", "cuda",
+            ))
+            pose_img = args.func(args, human_img_arg)
+        finally:
+            os.chdir(prev_cwd)
+        pose_img = pose_img[:, :, ::-1]   # BGR → RGB
+        pose_img = Image.fromarray(pose_img).resize(TARGET)
 
-        # DensePose: dense correspondence between pixels and a 3D body model.
-        # IDM-VTON's app uses a torchscripted model from the ckpt dir.
-        from preprocess.dwpose import DWposeDetector
-        # Note: actual IDM-VTON uses DensePose; some forks use DWPose. Adapt
-        # as needed based on what's in ckpt/.
-        # For now, leverage the ip-adapter / dense pose path from app.py.
-        # (Placeholder — densepose_img generation depends on repo version)
-        from torchvision.transforms import ToTensor
-        densepose_tensor = ToTensor()(selfie_resized).unsqueeze(0).to(self.device, self.tensor_dtype)
+        tensor_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),
+        ])
 
-        # ─── Run the SDXL TryonPipeline ──────────────────────────────
-        log.info("running SDXL pipeline (%d steps)…", n_steps)
-        with torch.no_grad():
-            prompt = f"model is wearing a {garment_description}"
+        log.info("running SDXL TryonPipeline (%d steps)…", n_steps)
+        device = self.device
+        with torch.no_grad(), torch.cuda.amp.autocast():
+            prompt = f"model is wearing {garment_description}"
             negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
-            prompt_embeds, neg_prompt_embeds, pooled_prompt_embeds, neg_pooled_prompt_embeds = self.pipe.encode_prompt(
-                prompt, negative_prompt=negative_prompt, num_images_per_prompt=1, do_classifier_free_guidance=True,
+            (
+                prompt_embeds, neg_prompt_embeds,
+                pooled_prompt_embeds, neg_pooled_prompt_embeds,
+            ) = self.pipe.encode_prompt(
+                prompt, num_images_per_prompt=1,
+                do_classifier_free_guidance=True, negative_prompt=negative_prompt,
             )
-            prompt_embeds_c, _, pooled_c, _ = self.pipe.encode_prompt(
-                f"a photo of {garment_description}", num_images_per_prompt=1, do_classifier_free_guidance=False,
+            prompt_c = f"a photo of {garment_description}"
+            (prompt_embeds_c, _, _, _) = self.pipe.encode_prompt(
+                prompt_c, num_images_per_prompt=1,
+                do_classifier_free_guidance=False, negative_prompt=negative_prompt,
             )
 
-            generator = torch.Generator(self.device).manual_seed(seed)
+            pose_tensor = tensor_transform(pose_img).unsqueeze(0).to(device, torch.float16)
+            garm_tensor = tensor_transform(garm_img).unsqueeze(0).to(device, torch.float16)
+            generator = torch.Generator(device).manual_seed(seed)
+
             images = self.pipe(
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=neg_prompt_embeds,
-                pooled_prompt_embeds=pooled_prompt_embeds,
-                negative_pooled_prompt_embeds=neg_pooled_prompt_embeds,
+                prompt_embeds=prompt_embeds.to(device, torch.float16),
+                negative_prompt_embeds=neg_prompt_embeds.to(device, torch.float16),
+                pooled_prompt_embeds=pooled_prompt_embeds.to(device, torch.float16),
+                negative_pooled_prompt_embeds=neg_pooled_prompt_embeds.to(device, torch.float16),
                 num_inference_steps=n_steps,
                 generator=generator,
                 strength=1.0,
-                pose_img=densepose_tensor,
-                text_embeds_cloth=prompt_embeds_c,
-                cloth=ToTensor()(garment_resized).unsqueeze(0).to(self.device, self.tensor_dtype),
-                mask_image=agnostic_mask,
-                image=selfie_resized,
-                height=TARGET[1],
-                width=TARGET[0],
-                ip_adapter_image=garment_resized.resize((224, 224)),
+                pose_img=pose_tensor,
+                text_embeds_cloth=prompt_embeds_c.to(device, torch.float16),
+                cloth=garm_tensor,
+                mask_image=mask,
+                image=human_img,
+                height=TARGET[1], width=TARGET[0],
+                ip_adapter_image=garm_img.resize(TARGET),
                 guidance_scale=guidance_scale,
-            ).images
-
+            )[0]
         return images[0]
 
 
