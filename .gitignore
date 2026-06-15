@@ -130,7 +130,9 @@ garmets/
 # ============================================================================
 # Vendor-box runtime data
 # ============================================================================
+vendor-box/data/
 vendor-box/results/
+vendor-box/venv/
 vendor-box/.venv/
 /var/lib/vendorbox/
 

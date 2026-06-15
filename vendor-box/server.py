@@ -38,7 +38,12 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-MODELS_DIR = Path(os.environ.get("VENDORBOX_MODELS_DIR", "/var/lib/vendorbox/models"))
+# Default to a project-local data dir (writable without sudo). Override with
+# VENDORBOX_MODELS_DIR=/var/lib/vendorbox/models for a system-wide install
+# where you've pre-created the dir and chowned it to the service user.
+_DEFAULT_DATA_ROOT = Path(__file__).resolve().parent / "data"
+MODELS_DIR = Path(os.environ.get("VENDORBOX_MODELS_DIR", str(_DEFAULT_DATA_ROOT / "models")))
+RESULTS_DIR = Path(os.environ.get("VENDORBOX_RESULTS_DIR", str(_DEFAULT_DATA_ROOT / "results")))
 
 
 # ============================================================================
@@ -101,7 +106,21 @@ def _load_pipelines() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("vendor-box starting up, models dir = %s", MODELS_DIR)
+    log.info("vendor-box starting up")
+    log.info("  models dir  = %s", MODELS_DIR)
+    log.info("  results dir = %s", RESULTS_DIR)
+    # Create the dirs we'll need. If these fail with permission errors, the
+    # user is pointing the service at a path their account can't write to.
+    try:
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        log.error(
+            "Cannot create data dirs: %s. Set VENDORBOX_MODELS_DIR and "
+            "VENDORBOX_RESULTS_DIR to a path your account can write to, "
+            "or pre-create the system paths and chown them to this user.", e,
+        )
+        raise
     _load_pipelines()
     log.info(
         "ready: cuda=%s idm_vton=%s wan_i2v=%s dm_vton=%s",
@@ -178,8 +197,7 @@ async def _run_still(job: Job, req: StillReq) -> None:
         )
 
         # Save and serve back
-        out_path = MODELS_DIR.parent / "results" / f"{job.id}.png"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = RESULTS_DIR / f"{job.id}.png"
         result.save(out_path)
         job.output_url = f"http://localhost:8000/results/{job.id}.png"
         job.status = "succeeded"
@@ -211,8 +229,7 @@ async def _run_video(job: Job, req: VideoReq) -> None:
         log.info("[%s] running Wan 2.1 i2v", job.id)
         video_bytes = await asyncio.to_thread(PIPES.wan_i2v.run, still=still)
 
-        out_path = MODELS_DIR.parent / "results" / f"{job.id}.mp4"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = RESULTS_DIR / f"{job.id}.mp4"
         out_path.write_bytes(video_bytes)
         job.output_url = f"http://localhost:8000/results/{job.id}.mp4"
         job.status = "succeeded"
@@ -321,8 +338,14 @@ async def healthz() -> dict[str, Any]:
     }
 
 
-# Static result files (so webapp can fetch /results/*.png and /results/*.mp4)
+# Static result files (so webapp can fetch /results/*.png and /results/*.mp4).
+# We need the mount BEFORE the app starts handling requests, but the directory
+# might not exist yet at import time. Create it here best-effort — the real
+# permission check is in lifespan(), which fails loudly with a useful message
+# if writes won't work.
 from fastapi.staticfiles import StaticFiles
-results_dir = MODELS_DIR.parent / "results"
-results_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/results", StaticFiles(directory=str(results_dir)), name="results")
+try:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError:
+    pass  # lifespan() will surface this with a clear error message
+app.mount("/results", StaticFiles(directory=str(RESULTS_DIR), check_dir=False), name="results")
