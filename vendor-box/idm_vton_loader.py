@@ -147,6 +147,22 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
     sys.path.insert(0, str(repo_root))
     sys.path.insert(0, str(repo_root / "gradio_demo"))
 
+    # IDM-VTON's preprocess code uses RELATIVE paths like
+    #   Path(__file__).parents[2] / 'ckpt/humanparsing/parsing_atr.onnx'
+    # which resolves to IDM-VTON/ckpt/humanparsing/... Our weights live
+    # under data/models/idm-vton/<subdir>. Symlink IDM-VTON/ckpt to our
+    # weights dir so the hardcoded paths resolve.
+    ckpt_link = repo_root / "ckpt"
+    if not ckpt_link.exists():
+        try:
+            ckpt_link.symlink_to(path, target_is_directory=True)
+            log.info("symlinked %s -> %s", ckpt_link, path)
+        except OSError as e:
+            raise RuntimeError(
+                f"Couldn't create symlink {ckpt_link} -> {path}: {e}. "
+                f"Manually run:  ln -s {path} {ckpt_link}"
+            )
+
     # yisol/IDM-VTON on HuggingFace ships subdirs at the repo root:
     #   densepose/  humanparsing/  openpose/  unet/  unet_encoder/  vae/ ...
     # The original gradio_demo expected them under ckpt/ — adjust to the
@@ -225,12 +241,13 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
     )
     pipe.to(device)
 
-    # Pre-processing models (live on CPU + small GPU footprint).
-    # HF layout: openpose/, humanparsing/ live at the model root, not under ckpt/.
+    # Pre-processing models. Both classes take gpu_id (int), NOT a path —
+    # they find their weights via IDM-VTON/ckpt/<subdir>/... which we
+    # symlinked above to the actual weights dir.
     log.info("loading OpenPose + HumanParsing pre-processors…")
-    openpose = OpenPose(str(path / "openpose"))
+    openpose = OpenPose(0)
     openpose.preprocessor.body_estimation.model.to(device)
-    parsing = Parsing(str(path / "humanparsing"))
+    parsing = Parsing(0)
 
     log.info("IDM-VTON pipeline ready")
     return IDMVTONPipe(

@@ -114,11 +114,18 @@ def _load_pipelines() -> None:
         else:
             log.info("Wan 2.1: skipped (LIVE-only mode; set LOAD_WAN_I2V=1 to enable)")
 
-        # ── DM-VTON (live streaming) ─────────────────────────────────
-        log.info("loading DM-VTON (TensorRT)…")
-        PIPES.dm_vton = _try_load("DM-VTON", lambda: (
-            __import__("dm_vton_loader").load_dm_vton_trt(MODELS_DIR / "dm-vton")
-        ))
+        # ── DM-VTON (live streaming) — opt-in via LOAD_DM_VTON=1 ──────
+        # Default off because DM-VTON's repo has a top-level `utils` package
+        # whose import side-effects collide with IDM-VTON's top-level `utils`
+        # when both are on sys.path. Snapshot-only deployments (IDM-VTON) do
+        # not need DM-VTON, so we leave it off by default.
+        if os.environ.get("LOAD_DM_VTON") == "1":
+            log.info("loading DM-VTON (TensorRT)…")
+            PIPES.dm_vton = _try_load("DM-VTON", lambda: (
+                __import__("dm_vton_loader").load_dm_vton_trt(MODELS_DIR / "dm-vton")
+            ))
+        else:
+            log.info("DM-VTON: skipped (set LOAD_DM_VTON=1 to enable for LIVE mode)")
         if PIPES.dm_vton: log.info("DM-VTON live pipeline ready")
 
     except ImportError as e:
