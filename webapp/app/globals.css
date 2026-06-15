@@ -127,77 +127,7 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   padding: 4px;
 }
 
-/* --- Photo-booth UX --- */
-.stage-video,
-.stage-snapshot,
-.stage-result {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  background: #000;
-}
-.stage-video {
-  transform: scaleX(-1); /* mirror selfie */
-}
-.stage-video.hidden { display: none; }
-.stage-snapshot,
-.stage-result { display: block; }
-
-.tryon-btn {
-  position: fixed;
-  bottom: calc(120px + max(env(safe-area-inset-bottom), 12px));
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  min-width: 200px;
-  padding: 14px 32px;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 999px;
-  box-shadow: 0 8px 24px var(--accent-glow), 0 2px 6px rgba(0, 0, 0, 0.4);
-  cursor: pointer;
-  transition: transform 0.1s, box-shadow 0.15s;
-  z-index: 5;
-}
-.tryon-btn:active {
-  transform: translateX(-50%) scale(0.96);
-}
-.tryon-btn-label {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-}
-.tryon-btn-sub {
-  font-size: 12px;
-  font-weight: 400;
-  opacity: 0.85;
-  max-width: 200px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.capture-flash {
-  position: fixed;
-  inset: 0;
-  background: #fff;
-  opacity: 0;
-  pointer-events: none;
-  z-index: 10;
-  animation: flash 250ms ease-out forwards;
-}
-@keyframes flash {
-  0%   { opacity: 0; }
-  20%  { opacity: 0.75; }
-  100% { opacity: 0; }
-}
-
+/* --- LIVE status (overlay states only) --- */
 .processing-overlay {
   position: fixed;
   inset: 0;
@@ -206,13 +136,12 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   align-items: center;
   justify-content: center;
   gap: 14px;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.65);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   z-index: 8;
   pointer-events: none;
 }
-.processing-overlay .try-again-btn-inline { pointer-events: auto; }
 .processing-text {
   font-size: 18px;
   font-weight: 600;
@@ -226,6 +155,7 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   color: var(--muted);
   text-align: center;
   padding: 0 24px;
+  max-width: 420px;
 }
 .spinner {
   width: 44px;
@@ -237,22 +167,34 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.try-again-btn {
-  position: fixed;
-  bottom: max(env(safe-area-inset-bottom), 24px);
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 12px 28px;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 999px;
-  font-size: 16px;
-  font-weight: 600;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  cursor: pointer;
-  z-index: 9;
+/* --- LIVE dot (pulsing red) --- */
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: live-pulse 1.4s ease-in-out infinite;
 }
-.try-again-btn:active { transform: translateX(-50%) scale(0.96); }
-.try-again-btn-inline { position: static; transform: none; margin-top: 8px; }
-.try-again-btn-inline:active { transform: scale(0.96); }
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.85); }
+}
+
+.live-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  /* Frame interpolation for smoother perceived fps when the server runs
+     at 15-20fps. Without this each new frame snaps in. */
+  image-rendering: auto;
+}
+
+/* When the LIVE status pill is on, embed the dot inline with the text */
+.status-pill .live-dot {
+  display: inline-block;
+  vertical-align: baseline;
+  margin-right: 6px;
+}
