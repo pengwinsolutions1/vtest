@@ -41,26 +41,34 @@ say "3/3 — pretrained checkpoints"
 TARGET="${VENDORBOX_MODELS_DIR:-$HERE/data/models}/dm-vton"
 mkdir -p "$TARGET"
 
-# Match by substring — DM-VTON ships multiple checkpoint variants
-# (mobile_warp.pt, pf_warp.pt, checkpoint_warp.pth, etc.). The loader picks
-# whichever file matches *warp*.{pt,pth} and *gen*.{pt,pth}.
-HAVE_WARP=$(compgen -G "$TARGET/*warp*.pt"  >/dev/null && echo 1 || \
-             compgen -G "$TARGET/*warp*.pth" >/dev/null && echo 1 || echo 0)
-HAVE_GEN=$(compgen -G  "$TARGET/*gen*.pt"   >/dev/null && echo 1 || \
-             compgen -G "$TARGET/*gen*.pth"  >/dev/null && echo 1 || echo 0)
+# Match by substring — DM-VTON ships multiple checkpoint variants under
+# varying names (mobile_warp.pt, pf_warp.pt, etc.). The loader picks the
+# first file matching *warp*.{pt,pth} and *gen*.{pt,pth}.
+shopt -s nullglob nocaseglob   # nocaseglob so "Warp.pt" matches too
+WARP_FILES=( "$TARGET"/*warp*.pt "$TARGET"/*warp*.pth )
+GEN_FILES=(  "$TARGET"/*gen*.pt  "$TARGET"/*gen*.pth  )
+shopt -u nocaseglob nullglob
 
-if [[ "$HAVE_WARP" == "1" && "$HAVE_GEN" == "1" ]]; then
-  ok "warp + gen checkpoints present"
-  for f in "$TARGET"/*warp*.pt "$TARGET"/*warp*.pth "$TARGET"/*gen*.pt "$TARGET"/*gen*.pth; do
-    [[ -f "$f" ]] && echo "    $(basename "$f")"
+echo "  searching in: $TARGET"
+if [[ -d "$TARGET" ]]; then
+  ls -lh "$TARGET" | sed 's/^/    /'
+else
+  echo "    (directory does not exist yet — creating)"
+  mkdir -p "$TARGET"
+fi
+
+if (( ${#WARP_FILES[@]} > 0 && ${#GEN_FILES[@]} > 0 )); then
+  ok "warp + gen checkpoints found:"
+  for f in "${WARP_FILES[@]}" "${GEN_FILES[@]}"; do
+    echo "    $(basename "$f")"
   done
   say "DONE — DM-VTON ready. Restart uvicorn and check /healthz."
   exit 0
 fi
 
 MISSING=()
-[[ "$HAVE_WARP" == "1" ]] || MISSING+=("*warp*.pt")
-[[ "$HAVE_GEN"  == "1" ]] || MISSING+=("*gen*.pt")
+(( ${#WARP_FILES[@]} == 0 )) && MISSING+=("*warp*.{pt,pth}")
+(( ${#GEN_FILES[@]}  == 0 )) && MISSING+=("*gen*.{pt,pth}")
 
 warn "missing checkpoint patterns: ${MISSING[*]}"
 cat <<EOF
