@@ -177,6 +177,50 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 .try-again-btn-inline { position: static; transform: none; margin-top: 8px; pointer-events: auto; }
 .try-again-btn-inline:active { transform: scale(0.96); }
 
+/* --- Framing instruction + countdown (preparing phase) --- */
+.framing-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  pointer-events: none;
+  z-index: 7;
+  text-align: center;
+}
+.framing-instruction {
+  font-size: 32px;
+  font-weight: 700;
+  color: #fff;
+  padding: 14px 28px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 16px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  max-width: 80%;
+}
+.framing-sub {
+  font-size: 14px;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+}
+.framing-countdown .framing-digit {
+  font-size: 180px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1;
+  text-shadow: 0 6px 24px rgba(0, 0, 0, 0.7);
+  animation: pop 1s ease-out forwards;
+}
+@keyframes pop {
+  0%   { transform: scale(1.4); opacity: 0.4; }
+  50%  { transform: scale(1);   opacity: 1; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+
 /* --- Overlay states (processing / failed) --- */
 .processing-overlay {
   position: fixed;

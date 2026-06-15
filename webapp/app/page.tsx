@@ -2,22 +2,61 @@
 // Customer page — photoreal snapshot try-on with IDM-VTON.
 //
 // Flow:
-//   1. Live webcam preview (mirrored, full-screen)
-//   2. User picks a dress from the bottom strip
-//   3. Snapshot captured from the webcam
-//   4. Snapshot + garment posted to /api/tryon
-//   5. Job polled every 1.5s while AI runs (~15-25s on vendor box)
-//   6. Result image fills the screen — customer can browse another dress
-//      to swap in a fresh try-on, or "Back to camera" to retake
-//
-// The LIVE WebSocket mode was tried first; it was real-time but the
-// quality didn't reach what's expected. IDM-VTON gives photoreal stills
-// — the closest to "real wearing" look that open AI currently produces.
+//   1. Live webcam preview (mirrored, full-screen). MediaPipe Pose runs
+//      continuously, computing a "framing" check (face visible, shoulders
+//      visible, hips visible, centered, full upper body).
+//   2. User picks a dress from the bottom strip → enter 'preparing' phase.
+//   3. While preparing, show framing instructions ("Step back", "Centre
+//      yourself", "Show your face") until the user stays well-framed for
+//      ~0.4 sec, then run a 3-2-1 countdown and snap.
+//   4. Snapshot + garment posted to /api/tryon.
+//   5. Job polled every 1.5s while AI runs (~165 sec on vendor box w/ CPU offload).
+//   6. Result image fills the screen — customer can pick another dress.
 
 import { useEffect, useRef, useState } from 'react';
 
 type Category = 'top' | 'bottom' | 'dress';
 type Gender = 'men' | 'women' | 'unisex';
+
+declare global {
+  interface Window {
+    Pose?: any;
+    Camera?: any;
+  }
+}
+
+// What the framing checker tells the UI on every pose result.
+interface Framing {
+  ok: boolean;
+  instruction: string;   // shown to the customer while framing is bad
+}
+
+// Run framing checks against MediaPipe pose landmarks (normalised image coords).
+// Order matters — first failed check sets the instruction so we don't flicker.
+function checkFraming(lm: any[] | null | undefined): Framing {
+  if (!lm) return { ok: false, instruction: 'Step in front of the camera' };
+  const vis = (i: number) => lm[i]?.visibility ?? 0;
+  const x = (i: number) => lm[i]?.x ?? 0.5;
+  const y = (i: number) => lm[i]?.y ?? 0.5;
+  // Key landmarks: 0=nose, 11/12=shoulders, 23/24=hips
+  if (vis(0) < 0.6)         return { ok: false, instruction: 'Step in front of the camera' };
+  if (y(0) > 0.45)          return { ok: false, instruction: 'Step back a little' };
+  if (y(0) < 0.05)          return { ok: false, instruction: 'Move down a bit' };
+  if (vis(11) < 0.6 || vis(12) < 0.6) return { ok: false, instruction: 'Show both shoulders' };
+  if (vis(23) < 0.6 || vis(24) < 0.6) return { ok: false, instruction: 'Step back — show your upper body' };
+  // Nose x should be near centre. (Pose landmarks are on the un-mirrored
+  // video frame, so "left" of the subject is high x. We just check distance
+  // from centre 0.5 either way.)
+  const noseDx = Math.abs(x(0) - 0.5);
+  if (noseDx > 0.22)        return { ok: false, instruction: 'Centre yourself in the frame' };
+  // Torso height check: shoulders→hips spans at least 20% of frame
+  const shY = (y(11) + y(12)) / 2;
+  const hpY = (y(23) + y(24)) / 2;
+  const torsoH = hpY - shY;
+  if (torsoH < 0.18)        return { ok: false, instruction: 'Step closer to the camera' };
+  if (torsoH > 0.55)        return { ok: false, instruction: 'Step back a little' };
+  return { ok: true, instruction: 'Ready — hold still' };
+}
 
 interface Garment {
   id: string;
@@ -39,9 +78,14 @@ interface JobStatus {
 const GENDER_LABELS: Record<Gender, string> = { men: 'Men', women: 'Women', unisex: 'Unisex' };
 const GENDER_EMOJI:  Record<Gender, string> = { men: '🧔', women: '👩', unisex: '🧑' };
 
-type Phase = 'live' | 'capturing' | 'submitting' | 'processing' | 'result' | 'failed';
+type Phase = 'live' | 'preparing' | 'capturing' | 'submitting' | 'processing' | 'result' | 'failed';
 
 const POLL_INTERVAL_MS = 1500;
+// Customer must stay well-framed for this many consecutive pose results
+// before the countdown starts. ~30 fps × 0.4s ≈ 12 frames.
+const FRAMING_HOLD_FRAMES = 12;
+// Countdown shown before the snap actually fires
+const COUNTDOWN_SECS = 3;
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -59,12 +103,27 @@ export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
 
+  // Pose + framing
+  const [framing, setFraming] = useState<Framing>({ ok: false, instruction: 'Step in front of the camera' });
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const framingRef = useRef<Framing>(framing);
+  const phaseRef = useRef<Phase>('live');
+  const garmentRef = useRef<Garment | null>(null);
+  const okFramesRef = useRef(0);
+  const countdownTimerRef = useRef<number | null>(null);
+
   const selectedGarment = garments.find(g => g.id === selectedId) || null;
 
-  // Camera + catalog setup
+  // Keep refs in sync with state so the pose-result callback always sees fresh values
+  useEffect(() => { framingRef.current = framing; }, [framing]);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+  useEffect(() => { garmentRef.current = selectedGarment; }, [selectedGarment]);
+
+  // Camera + catalog + MediaPipe Pose setup
   useEffect(() => {
     let mounted = true;
     let stream: MediaStream | null = null;
+    let mpCamera: any = null;
 
     async function setup() {
       try {
@@ -81,6 +140,52 @@ export default function Home() {
       v.srcObject = stream;
       await v.play();
       setStatus('tap a dress to try it on');
+
+      // MediaPipe Pose runs continuously on the live video. We react to its
+      // results to drive the framing instruction + auto-trigger snapshot
+      // during the 'preparing' phase.
+      const Pose = window.Pose;
+      const Camera = window.Camera;
+      if (!Pose || !Camera) {
+        // MediaPipe scripts haven't loaded; we still let the user manually
+        // tap a dress, just without framing guidance.
+        console.warn('MediaPipe Pose not available — framing check disabled');
+        return;
+      }
+      const pose = new Pose({ locateFile: (f: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
+      pose.setOptions({
+        modelComplexity: 1, smoothLandmarks: true, enableSegmentation: false,
+        minDetectionConfidence: 0.5, minTrackingConfidence: 0.5,
+      });
+      pose.onResults((r: any) => {
+        const f = checkFraming(r.poseLandmarks);
+        // Avoid setState churn when the instruction hasn't changed.
+        if (framingRef.current.ok !== f.ok || framingRef.current.instruction !== f.instruction) {
+          setFraming(f);
+        }
+        // Only react during 'preparing' phase
+        if (phaseRef.current !== 'preparing') return;
+        if (f.ok) {
+          okFramesRef.current += 1;
+          if (okFramesRef.current >= FRAMING_HOLD_FRAMES && countdownTimerRef.current === null) {
+            startCountdown();
+          }
+        } else {
+          okFramesRef.current = 0;
+          if (countdownTimerRef.current !== null) {
+            // Customer moved out of frame mid-countdown — abort it
+            clearInterval(countdownTimerRef.current);
+            countdownTimerRef.current = null;
+            setCountdown(null);
+          }
+        }
+      });
+
+      mpCamera = new Camera(v, {
+        onFrame: async () => { await pose.send({ image: v }); },
+        width: v.videoWidth || 1280, height: v.videoHeight || 720,
+      });
+      mpCamera.start();
     }
     setup();
 
@@ -95,10 +200,30 @@ export default function Home() {
 
     return () => {
       mounted = false;
+      try { mpCamera?.stop(); } catch {}
       stream?.getTracks().forEach(t => t.stop());
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
     };
   }, []);
+
+  // Countdown ticker. After COUNTDOWN_SECS at 1Hz, fire captureAndSubmit().
+  function startCountdown() {
+    let n = COUNTDOWN_SECS;
+    setCountdown(n);
+    countdownTimerRef.current = window.setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(countdownTimerRef.current!);
+        countdownTimerRef.current = null;
+        setCountdown(null);
+        const g = garmentRef.current;
+        if (g) captureAndSubmit(g);
+      } else {
+        setCountdown(n);
+      }
+    }, 1000);
+  }
 
   // Take a snapshot from the live video — mirrored to match what the user sees.
   async function captureSnapshot(): Promise<{ blob: Blob; dataUrl: string } | null> {
@@ -118,14 +243,29 @@ export default function Home() {
     return { blob, dataUrl: canvas.toDataURL('image/jpeg', 0.92) };
   }
 
-  async function tryOnDress(g: Garment) {
+  // Picker tap: enter 'preparing' phase. The pose-result handler will
+  // auto-trigger captureAndSubmit() once framing has been ok for
+  // FRAMING_HOLD_FRAMES consecutive results.
+  function tryOnDress(g: Garment) {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
     setJobId(null);
     setJobStatus(null);
+    setSnapshotDataUrl(null);
     setSelectedId(g.id);
+    setCountdown(null);
+    okFramesRef.current = 0;
+    setPhase('preparing');
+    setStatus('frame yourself');
+  }
+
+  async function captureAndSubmit(g: Garment) {
     setPhase('capturing');
     setStatus('hold still…');
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise(r => setTimeout(r, 200));
 
     const snap = await captureSnapshot();
     if (!snap) {
@@ -151,7 +291,7 @@ export default function Home() {
       }
       setJobId(data.id);
       setPhase('processing');
-      setStatus('generating your photo (~20 sec)…');
+      setStatus('generating your photo (~2-3 min)…');
     } catch (e: any) {
       setStatus(`network: ${e.message}`);
       setPhase('failed');
@@ -206,7 +346,7 @@ export default function Home() {
   const presentGenders: Gender[] = Array.from(new Set(garments.map(g => g.gender)))
     .filter(g => g !== 'unisex') as Gender[];
 
-  const showLiveVideo = phase === 'live' || phase === 'capturing';
+  const showLiveVideo = phase === 'live' || phase === 'preparing' || phase === 'capturing';
   const showCaptured  = phase === 'submitting' || phase === 'processing';
   const showResult    = phase === 'result';
 
@@ -231,6 +371,20 @@ export default function Home() {
       ) : null}
 
       {phase === 'capturing' && <div className="capture-flash" />}
+
+      {/* Framing instruction + countdown — visible only during 'preparing' */}
+      {phase === 'preparing' && countdown === null && (
+        <div className="framing-overlay">
+          <div className="framing-instruction">{framing.instruction}</div>
+          <div className="framing-sub">trying on {selectedGarment?.name || ''}</div>
+        </div>
+      )}
+      {phase === 'preparing' && countdown !== null && (
+        <div className="framing-overlay framing-countdown">
+          <div className="framing-digit">{countdown}</div>
+          <div className="framing-sub">hold still</div>
+        </div>
+      )}
 
       <div className="status-pill">{fatal || status}</div>
 
