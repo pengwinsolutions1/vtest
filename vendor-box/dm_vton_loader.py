@@ -111,16 +111,17 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
     from pipelines import DMVTONPipeline
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
+    # DM-VTON's submodules don't all auto-cast cleanly to FP16 — partial .half()
+    # leaves dtype mismatches between layers (input FloatTensor vs weight
+    # HalfTensor RuntimeError at the first conv). It's small enough that FP32
+    # on RTX 4080 stays ~100-200 ms / frame, which is fine for live perception.
+    dtype = torch.float32
 
     log.info("instantiating DMVTONPipeline…")
     pipeline = DMVTONPipeline(
         align_corners=True,
         checkpoints={"warp": str(warp_ckpt), "gen": str(gen_ckpt)},
     ).to(device).eval()
-
-    if dtype == torch.float16:
-        pipeline = pipeline.half()
 
     log.info("DM-VTON pipeline ready (PyTorch %s on %s)", dtype, device)
     return DMVTONPipe(pipeline=pipeline, device=device, tensor_dtype=dtype)
