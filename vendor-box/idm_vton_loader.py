@@ -70,10 +70,15 @@ class IDMVTONPipe:
         import apply_net
 
         idm_category = CATEGORY_MAP[category]
-        # 3:4 aspect from the configurable width — IDM-VTON's training data
-        # was 768x1024 but lower resolutions still produce coherent outputs
-        # at a fraction of the inference time.
-        TARGET = (target_width, target_width * 4 // 3)
+        # 3:4 aspect from the configurable width. SDXL requires both
+        # dimensions divisible by 8 — naive 512 × 4/3 = 682.67 → 682,
+        # which raises ValueError. Floor both to the nearest multiple of 8.
+        # 512 → 512 × 680   (was 682, fixed to 680)
+        # 768 → 768 × 1024
+        # 600 → 600 × 800
+        _w = (target_width // 8) * 8
+        _h = ((target_width * 4 // 3) // 8) * 8
+        TARGET = (_w, _h)
 
         # ─── Auto-crop the selfie to 3:4 BEFORE resizing ────────────────
         # IDM-VTON's pipeline is trained on fashion portraits (3:4). Most
