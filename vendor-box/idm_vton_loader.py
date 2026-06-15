@@ -175,14 +175,18 @@ class IDMVTONPipe:
                 guidance_scale=guidance_scale,
             )[0]
 
-        # Return the AI result at native 768x1024 — no paste-back into the
-        # webcam frame. The paste-back lost ~30-40% of the resolution
-        # because the cropped webcam region is only ~540x720, and pasting
-        # the 768x1024 AI image into that smaller area downsamples it.
-        # For best quality we keep the full SDXL output. The customer's
-        # face / hair are still preserved by the IP-adapter, just framed
-        # against the AI-generated body+background rather than the webcam.
-        return images[0]
+        # Free up VRAM before returning. Without this, fragments accumulate
+        # across consecutive inferences and the second call can hit OOM or
+        # silently stall the worker thread (user reported "not responding"
+        # after the first photo). gc.collect() finalises Python objects
+        # holding tensor refs; empty_cache() returns reserved memory to
+        # the driver.
+        result_img = images[0]
+        del images
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        return result_img
 
 
 def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
@@ -351,21 +355,17 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
         pipe.unet.to(device)
         if hasattr(pipe, "unet_encoder") and pipe.unet_encoder is not None:
             pipe.unet_encoder.to(device)
-        # The lighter components: hook them to CPU, hook swaps to GPU
-        # only during forward. Chain hooks so each previous one offloads
-        # before the next loads (avoids stacking VRAM use).
-        prev_hook = None
+        # Light components: independent hooks (NO prev_module_hook chain).
+        # The chained version was leaving hooks in inconsistent state after
+        # the first inference completed — second call hung. Independent
+        # hooks just lazily move each component to GPU when called and
+        # back to CPU after, no inter-component state.
         for name in ("text_encoder", "text_encoder_2", "image_encoder", "vae"):
             component = getattr(pipe, name, None)
             if component is None:
                 continue
             component.to("cpu")
-            _, prev_hook = cpu_offload_with_hook(
-                component, execution_device=device, prev_module_hook=prev_hook,
-            )
-        # Stash the last hook so the post-forward also drops back to CPU
-        # cleanly between inferences.
-        pipe._offload_last_hook = prev_hook
+            cpu_offload_with_hook(component, execution_device=device)
     else:
         pipe.to(device)
 
