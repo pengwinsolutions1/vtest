@@ -32,29 +32,65 @@ interface Framing {
 }
 
 // Run framing checks against MediaPipe pose landmarks (normalised image coords).
-// Order matters — first failed check sets the instruction so we don't flicker.
-function checkFraming(lm: any[] | null | undefined): Framing {
+// Category-specific so the instruction matches what the AI actually needs
+// to see: a top wants the upper body, a dress wants the full body, a
+// bottom (pants/skirt) only needs the legs.
+//
+// MediaPipe Pose landmark indices used here:
+//   0=nose, 11/12=shoulders, 23/24=hips, 25/26=knees, 27/28=ankles,
+//   15/16=wrists, 7/8=ears
+//
+// Order matters: first failed check sets the instruction so we don't flicker.
+function checkFraming(lm: any[] | null | undefined, category: Category): Framing {
   if (!lm) return { ok: false, instruction: 'Step in front of the camera' };
   const vis = (i: number) => lm[i]?.visibility ?? 0;
   const x = (i: number) => lm[i]?.x ?? 0.5;
   const y = (i: number) => lm[i]?.y ?? 0.5;
-  // Key landmarks: 0=nose, 11/12=shoulders, 23/24=hips
-  if (vis(0) < 0.6)         return { ok: false, instruction: 'Step in front of the camera' };
-  if (y(0) > 0.45)          return { ok: false, instruction: 'Step back a little' };
-  if (y(0) < 0.05)          return { ok: false, instruction: 'Move down a bit' };
-  if (vis(11) < 0.6 || vis(12) < 0.6) return { ok: false, instruction: 'Show both shoulders' };
-  if (vis(23) < 0.6 || vis(24) < 0.6) return { ok: false, instruction: 'Step back — show your upper body' };
-  // Nose x should be near centre. (Pose landmarks are on the un-mirrored
-  // video frame, so "left" of the subject is high x. We just check distance
-  // from centre 0.5 either way.)
-  const noseDx = Math.abs(x(0) - 0.5);
-  if (noseDx > 0.22)        return { ok: false, instruction: 'Centre yourself in the frame' };
-  // Torso height check: shoulders→hips spans at least 20% of frame
-  const shY = (y(11) + y(12)) / 2;
-  const hpY = (y(23) + y(24)) / 2;
-  const torsoH = hpY - shY;
-  if (torsoH < 0.18)        return { ok: false, instruction: 'Step closer to the camera' };
-  if (torsoH > 0.55)        return { ok: false, instruction: 'Step back a little' };
+  const bothVisible = (a: number, b: number, thr = 0.6) => vis(a) >= thr && vis(b) >= thr;
+
+  // ── Common: nose horizontal centre ──
+  const noseCentre = () => {
+    if (vis(0) < 0.6) return null;
+    const dx = Math.abs(x(0) - 0.5);
+    if (dx > 0.25) return 'Centre yourself in the frame';
+    return null;
+  };
+
+  if (category === 'top') {
+    if (vis(0) < 0.6)            return { ok: false, instruction: 'Show your face — step in front of the camera' };
+    if (y(0) > 0.40)             return { ok: false, instruction: 'Step back so we can see your full upper body' };
+    if (y(0) < 0.05)             return { ok: false, instruction: 'Move down a bit — show the top of your head' };
+    if (!bothVisible(11, 12))    return { ok: false, instruction: 'Show both your shoulders' };
+    if (!bothVisible(23, 24))    return { ok: false, instruction: 'Step back so your hips are visible too' };
+    const c = noseCentre();      if (c) return { ok: false, instruction: c };
+    const torsoH = (y(23) + y(24)) / 2 - (y(11) + y(12)) / 2;
+    if (torsoH < 0.18)           return { ok: false, instruction: 'Step closer to the camera' };
+    if (torsoH > 0.55)           return { ok: false, instruction: 'Step back a little' };
+    return { ok: true, instruction: 'Ready — hold still' };
+  }
+
+  if (category === 'dress') {
+    if (vis(0) < 0.6)            return { ok: false, instruction: 'Show your face — step in front of the camera' };
+    if (y(0) > 0.30)             return { ok: false, instruction: 'Step back so we can see your full body' };
+    if (y(0) < 0.03)             return { ok: false, instruction: 'Move down a bit — show your head' };
+    if (!bothVisible(11, 12))    return { ok: false, instruction: 'Show both your shoulders' };
+    if (!bothVisible(23, 24))    return { ok: false, instruction: 'Step back to show your hips' };
+    if (!bothVisible(25, 26, 0.4)) return { ok: false, instruction: 'Step back further — show your full body (knees too)' };
+    const c = noseCentre();      if (c) return { ok: false, instruction: c };
+    return { ok: true, instruction: 'Ready — hold still' };
+  }
+
+  if (category === 'bottom') {
+    if (!bothVisible(23, 24))    return { ok: false, instruction: 'Show your hips' };
+    if (!bothVisible(25, 26))    return { ok: false, instruction: 'Step back to show your knees' };
+    if (!bothVisible(27, 28, 0.4)) return { ok: false, instruction: 'Step back to show your feet' };
+    // Hip x as centre check (no face requirement for bottoms)
+    const hipX = (x(23) + x(24)) / 2;
+    if (Math.abs(hipX - 0.5) > 0.25) return { ok: false, instruction: 'Centre yourself in the frame' };
+    return { ok: true, instruction: 'Ready — hold still' };
+  }
+
+  // Fallback (shouldn't hit — keeps TS happy in case new categories get added)
   return { ok: true, instruction: 'Ready — hold still' };
 }
 
@@ -158,8 +194,12 @@ export default function Home() {
         minDetectionConfidence: 0.5, minTrackingConfidence: 0.5,
       });
       pose.onResults((r: any) => {
-        const f = checkFraming(r.poseLandmarks);
-        // Avoid setState churn when the instruction hasn't changed.
+        // Pose runs always, but the framing rules depend on the currently
+        // selected garment's category. Outside 'preparing' we run a generic
+        // 'top' check so the status pill still reflects roughly-correct
+        // guidance; the strict per-category check kicks in on tap.
+        const cat = garmentRef.current?.category || 'top';
+        const f = checkFraming(r.poseLandmarks, cat);
         if (framingRef.current.ok !== f.ok || framingRef.current.instruction !== f.instruction) {
           setFraming(f);
         }
