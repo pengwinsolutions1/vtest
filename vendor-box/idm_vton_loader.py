@@ -45,15 +45,15 @@ class IDMVTONPipe:
         garment: Image.Image,
         category: Literal["top", "bottom", "dress"],
         garment_description: str = "garment",
-        # 30 is IDM-VTON's training default. 20 gives near-training-quality
-        # output with ~33% speedup. Hands/garment texture stay crisp.
-        # Drop to 8 if you need <20s response; bump to 30 for absolute max.
-        # Tunable via IDM_VTON_STEPS env var read by the server.
-        n_steps: int = 20,
-        # IDM-VTON's gradio_demo uses 2.0; bumping to 2.5 strengthens the
-        # garment colour/texture fidelity at the cost of slightly less
-        # photo-real background detail.
-        guidance_scale: float = 2.5,
+        # Trade-off knobs (override via server env vars IDM_VTON_STEPS /
+        # IDM_VTON_RES / IDM_VTON_GUIDANCE):
+        #   steps=4,  res=512  → ~3-6s, rough but recognisable (FAST default)
+        #   steps=8,  res=768  → ~15-25s, balanced
+        #   steps=20, res=768  → ~30-45s, near-training quality
+        #   steps=30, res=768  → ~45-60s, max
+        n_steps: int = 4,
+        guidance_scale: float = 2.0,
+        target_width: int = 512,    # 512 = fast, 768 = quality
         seed: int = 42,
     ) -> Image.Image:
         """One photoreal try-on inference. ~15-25 sec on RTX 4080.
@@ -70,7 +70,10 @@ class IDMVTONPipe:
         import apply_net
 
         idm_category = CATEGORY_MAP[category]
-        TARGET = (768, 1024)   # IDM-VTON native resolution (3:4 aspect)
+        # 3:4 aspect from the configurable width — IDM-VTON's training data
+        # was 768x1024 but lower resolutions still produce coherent outputs
+        # at a fraction of the inference time.
+        TARGET = (target_width, target_width * 4 // 3)
 
         # ─── Auto-crop the selfie to 3:4 BEFORE resizing ────────────────
         # IDM-VTON's pipeline is trained on fashion portraits (3:4). Most

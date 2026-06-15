@@ -238,15 +238,21 @@ async def _run_still(job: Job, req: StillReq) -> None:
             garment = Image.open(io.BytesIO(r.content)).convert("RGB")
         log.info("[%s] inputs fetched, running IDM-VTON", job.id)
 
-        # IDM_VTON_STEPS env var overrides the per-call step count. 8 is the
-        # snapshot-mode default (~4x faster than the 30-step training default
-        # with modest quality loss); bump to 16-30 for higher fidelity.
-        n_steps = int(os.environ.get("IDM_VTON_STEPS", "8"))
+        # Env-var quality dials. Defaults are FAST mode (~3-6s on RTX 4060 Ti);
+        # bump for higher fidelity:
+        #   IDM_VTON_STEPS:   4 (fast) / 8 / 20 / 30 (max)
+        #   IDM_VTON_RES:     512 (fast) / 768 (quality)
+        #   IDM_VTON_GUIDANCE: 2.0 (default) / 2.5 (stronger garment adherence)
+        n_steps  = int(os.environ.get("IDM_VTON_STEPS", "4"))
+        res      = int(os.environ.get("IDM_VTON_RES",   "512"))
+        guidance = float(os.environ.get("IDM_VTON_GUIDANCE", "2.0"))
 
         result = await asyncio.to_thread(
             PIPES.idm_vton.run,
             selfie=selfie, garment=garment, category=req.category,
             n_steps=n_steps,
+            guidance_scale=guidance,
+            target_width=res,
         )
 
         # Save and serve back

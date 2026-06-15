@@ -331,7 +331,7 @@ export default function Home() {
       }
       setJobId(data.id);
       setPhase('processing');
-      setStatus('generating your photo (~30-45 sec, best quality)…');
+      setStatus('generating your photo (~5 sec, fast mode)…');
     } catch (e: any) {
       setStatus(`network: ${e.message}`);
       setPhase('failed');
