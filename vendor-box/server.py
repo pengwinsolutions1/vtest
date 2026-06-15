@@ -45,6 +45,24 @@ _DEFAULT_DATA_ROOT = Path(__file__).resolve().parent / "data"
 MODELS_DIR = Path(os.environ.get("VENDORBOX_MODELS_DIR", str(_DEFAULT_DATA_ROOT / "models")))
 RESULTS_DIR = Path(os.environ.get("VENDORBOX_RESULTS_DIR", str(_DEFAULT_DATA_ROOT / "results")))
 
+# Base URL the webapp's browser uses to fetch /results/*.png and /results/*.mp4
+# from this service. MUST include the host the browser can reach — using
+# 'localhost' breaks split deployments (the Mac kiosk's browser interprets
+# localhost as the Mac itself, not the vendor box).
+# Default: best-effort detection. Override with VENDORBOX_PUBLIC_URL.
+def _default_public_url() -> str:
+    import socket
+    try:
+        # Connect-style detection: which interface routes outbound traffic?
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        return f"http://{ip}:8000"
+    except Exception:
+        return "http://localhost:8000"
+
+PUBLIC_BASE_URL = os.environ.get("VENDORBOX_PUBLIC_URL", _default_public_url()).rstrip("/")
+
 
 # ============================================================================
 # Pipeline holders — populated by lifespan() on startup
@@ -137,6 +155,7 @@ async def lifespan(app: FastAPI):
     log.info("vendor-box starting up")
     log.info("  models dir  = %s", MODELS_DIR)
     log.info("  results dir = %s", RESULTS_DIR)
+    log.info("  public URL  = %s   (override with VENDORBOX_PUBLIC_URL)", PUBLIC_BASE_URL)
     # Create the dirs we'll need. If these fail with permission errors, the
     # user is pointing the service at a path their account can't write to.
     try:
@@ -227,7 +246,7 @@ async def _run_still(job: Job, req: StillReq) -> None:
         # Save and serve back
         out_path = RESULTS_DIR / f"{job.id}.png"
         result.save(out_path)
-        job.output_url = f"http://localhost:8000/results/{job.id}.png"
+        job.output_url = f"{PUBLIC_BASE_URL}/results/{job.id}.png"
         job.status = "succeeded"
         log.info("[%s] still done in %.1fs", job.id, time.time() - job.started_at)
     except Exception as e:
