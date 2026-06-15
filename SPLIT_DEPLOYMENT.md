@@ -47,9 +47,16 @@ On the NVIDIA box (Ubuntu 22.04 + CUDA 12.1):
 git clone https://github.com/pengwinsolutions1/vtest.git virtualtryon
 cd virtualtryon/vendor-box
 
-# 2. Python env
-python3.11 -m venv venv
+# 2. Python env — any Python 3.10+ works. Check what you have:
+python3 --version
+# If you see 3.10 / 3.11 / 3.12 → use `python3 -m venv venv` below.
+# If you see 3.9 or older, install 3.11 first:
+#   sudo apt install -y python3.11 python3.11-venv python3.11-dev
+#   then use `python3.11 -m venv venv`
+
+python3 -m venv venv        # or python3.11 -m venv venv
 source venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt   # ~3-5 min, CUDA wheels
 
 # 3. (Eventually) download model weights — ~25 GB, one-time

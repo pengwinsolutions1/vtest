@@ -57,9 +57,15 @@ cd /opt
 sudo git clone <this-repo> virtualtryon
 cd virtualtryon/vendor-box
 
-# Install Python deps in a venv
-python3.11 -m venv venv
+# Install Python deps in a venv. Any Python 3.10+ works (3.11 recommended).
+# Check what you have first:
+python3 --version
+# If 3.10/3.11/3.12 → use `python3` below. If 3.9 or older, install 3.11:
+#   sudo apt install -y python3.11 python3.11-venv python3.11-dev
+
+python3 -m venv venv      # or python3.11 -m venv venv
 source venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 
 # Pre-download model weights (one-time, ~25 GB)
