@@ -38,4 +38,9 @@ if [[ -n "$NVIDIA_LIBS" ]]; then
   echo "[run-server] LD_LIBRARY_PATH adds: $NVIDIA_LIBS"
 fi
 
+# PyTorch's default CUDA allocator fragments easily under model-cpu-offload
+# (lots of allocs/frees as components swap). expandable_segments cuts the
+# fragmentation cost dramatically — required to fit IDM-VTON on a 16 GB GPU.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
 exec uvicorn server:app --host 0.0.0.0 --port "${PORT:-8000}" "$@"

@@ -239,26 +239,26 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
 
     unet = UNet2DConditionModel.from_pretrained(
         base, subfolder="unet", torch_dtype=dtype,
-    ).to(device).requires_grad_(False)
+    ).requires_grad_(False)
 
     unet_encoder = UNet2DConditionModel_ref.from_pretrained(
         base, subfolder="unet_encoder", torch_dtype=dtype,
-    ).to(device).requires_grad_(False)
+    ).requires_grad_(False)
 
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         base, subfolder="image_encoder", torch_dtype=dtype,
-    ).to(device).requires_grad_(False)
+    ).requires_grad_(False)
 
     vae = AutoencoderKL.from_pretrained(
         base, subfolder="vae", torch_dtype=dtype,
-    ).to(device).requires_grad_(False)
+    ).requires_grad_(False)
 
     text_encoder_one = CLIPTextModel.from_pretrained(
         base, subfolder="text_encoder", torch_dtype=dtype,
-    ).to(device).requires_grad_(False)
+    ).requires_grad_(False)
     text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
         base, subfolder="text_encoder_2", torch_dtype=dtype,
-    ).to(device).requires_grad_(False)
+    ).requires_grad_(False)
 
     tokenizer_one = AutoTokenizer.from_pretrained(base, subfolder="tokenizer", use_fast=False)
     tokenizer_two = AutoTokenizer.from_pretrained(base, subfolder="tokenizer_2", use_fast=False)
@@ -279,7 +279,16 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
         unet_encoder=unet_encoder,
         torch_dtype=dtype,
     )
-    pipe.to(device)
+    # CPU offloading — IDM-VTON's full SDXL stack (UNet + UNet encoder + VAE
+    # + 2 text encoders + image encoder) is ~14 GB at FP16. On a 16 GB card
+    # the activation tensors don't fit. enable_model_cpu_offload() keeps each
+    # component on CPU until it's the active one, then swaps it to GPU. ~50%
+    # slower per inference but fits in ~8 GB peak VRAM.
+    if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory < 20 * 1024**3:
+        log.info("enabling CPU offload (GPU < 20 GB — fits in lower VRAM, ~50%% slower)")
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to(device)
 
     # Pre-processing models. Both classes take gpu_id (int), NOT a path —
     # they find their weights via IDM-VTON/ckpt/<subdir>/... which we
