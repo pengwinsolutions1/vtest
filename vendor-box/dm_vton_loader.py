@@ -43,29 +43,42 @@ log = logging.getLogger("dm-vton")
 HEM_EXTEND: dict[str, float] = {
     "top":    0.55,
     "bottom": 2.40,
-    "dress":  2.80,   # well past knees for floor-length dresses
+    "dress":  3.20,   # ankle-length: dress drapes well past the visible body
 }
 COLLAR_RISE: dict[str, float] = {
-    "top":    0.32,
+    # MUST stay small — anything > ~0.20 puts the polygon top into the face.
+    # 0.05-0.10 sits the collar just above the shoulder line where a real
+    # garment's neckline is.
+    "top":    0.08,
     "bottom": -0.95,
-    "dress":  0.38,   # bring the collar up close to the chin / neckline
+    "dress":  0.08,
 }
 SIDE_PAD: dict[str, float] = {
     "top":    0.45,
     "bottom": 0.40,
-    "dress":  0.55,   # generous so the dress falls outside the shoulder line
+    "dress":  0.55,
 }
+
+# 8-vertex sleeve polygon disabled by default: tracks elbows but creates
+# weird "garment moves with arm" artifacts the user explicitly didn't want.
+# Arms always show through the webcam outside the torso polygon — cleaner.
 HAS_SLEEVES: dict[str, bool] = {
-    "top":    True,
+    "top":    False,
     "bottom": False,
-    "dress":  True,    # most dresses we ship have sleeves visible
+    "dress":  False,
 }
-# How far OUT from the elbow to push the sleeve outline, fraction of shoulder
-# span. Higher = baggier sleeves.
 SLEEVE_OUTSET: float = 0.35
 
+# Below the hip line, do NOT clip the polygon by the body silhouette.
+# Dresses drape past the body (skirt fabric hangs in front of legs / off-frame),
+# so clipping makes the lower dress vanish whenever legs aren't fully visible.
+USE_BODY_MASK_BELOW_HIPS: dict[str, bool] = {
+    "top":    True,
+    "bottom": False,
+    "dress":  False,
+}
+
 # Polygon smoothing — how fast the polygon catches up to a new pose detection.
-# Lower = smoother + laggier; higher = snappier + jitter-ier.
 POLYGON_SMOOTH_ALPHA = 0.55
 
 # Pixels of dilation to apply to the body silhouette mask before intersecting
@@ -175,7 +188,24 @@ class DMVTONPipe:
             )
             body_dilated = cv2.dilate(body_mask, kernel)
             soft_body = cv2.GaussianBlur(body_dilated, (15, 15), 0)
-            mask = poly_mask * soft_body
+
+            # For dresses + bottoms, the garment extends BELOW the visible
+            # body. Clipping by body silhouette there makes the lower dress
+            # disappear whenever legs aren't fully in frame. Override the
+            # body mask to 1.0 below the hip line so the polygon's hem area
+            # drapes freely.
+            effective_body = soft_body
+            if not USE_BODY_MASK_BELOW_HIPS.get(category, True):
+                # Find the hip y from the smoothed polygon (last vertex on the
+                # bottom edge). For a 4-vertex polygon: index 2 or 3 has hem y.
+                hip_y = self._hip_y_from_pose(pose_results, orig_h)
+                if hip_y is not None:
+                    below = np.zeros((orig_h, orig_w), dtype=np.float32)
+                    below[hip_y:, :] = 1.0
+                    # Soft transition across ~10% of frame height
+                    soft_below = cv2.GaussianBlur(below, (61, 61), 0)
+                    effective_body = soft_body * (1 - soft_below) + 1.0 * soft_below
+            mask = poly_mask * effective_body
         else:
             mask = poly_mask
         mask = np.clip(mask, 0.0, 1.0)[..., None]   # (H, W, 1) for broadcast
@@ -183,6 +213,21 @@ class DMVTONPipe:
         # ── 6. Composite: AI render inside mask, webcam outside ────
         composited = ai_full * mask + frame_full * (1 - mask)
         return Image.fromarray(composited.astype(np.uint8))
+
+    def _hip_y_from_pose(self, pose_results, h: int):
+        """Return the average hip y in pixels, or None if not detectable."""
+        plm = getattr(pose_results, "pose_landmarks", None) or []
+        if not plm:
+            return None
+        lms = plm[0]
+        try:
+            l_vis = getattr(lms[23], "visibility", 1.0)
+            r_vis = getattr(lms[24], "visibility", 1.0)
+            if min(l_vis, r_vis) < 0.4:
+                return None
+            return int((lms[23].y + lms[24].y) / 2 * h)
+        except (IndexError, AttributeError):
+            return None
 
     def _build_torso_polygon(self, pose_results, category: str, w: int, h: int):
         """Return an N-vertex int32 polygon outlining where the garment goes.
