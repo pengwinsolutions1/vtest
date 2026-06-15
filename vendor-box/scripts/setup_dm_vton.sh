@@ -47,11 +47,16 @@ if command -v nvidia-smi > /dev/null; then
 fi
 echo "  installing $CUPY_SPEC"
 
+# opencv-python-headless 4.13+ requires numpy>=2. We pin numpy<2 elsewhere
+# in this stack because mediapipe + DM-VTON's own ABI expect 1.x. Cap opencv
+# to <4.13 to keep the numpy 1 environment consistent.
+# tifffile (pulled in by scikit-image) has the same story — pin <2025 wheel.
 pip install \
   "$CUPY_SPEC" \
   'tensorboard' \
-  'opencv-python-headless>=4.9' \
-  'scikit-image' \
+  'opencv-python-headless>=4.9,<4.13' \
+  'scikit-image>=0.22,<0.25' \
+  'tifffile<2025' \
   'pillow>=10.0' \
   'tqdm'
 ok "DM-VTON extras installed (incl. $CUPY_SPEC)"

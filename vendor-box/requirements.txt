@@ -18,7 +18,9 @@ python-multipart>=0.0.9
 
 # ── Image / video / numerics ──────────────────────────────────────────────
 pillow>=10.0
-opencv-python-headless>=4.9
+# opencv 4.13+ bumped to numpy>=2; we keep numpy<2 for the rest of the stack
+# (mediapipe ABI, DM-VTON kernel modules). Cap opencv accordingly.
+opencv-python-headless>=4.9,<4.13
 # Keep numpy < 2 — many AI libs (mediapipe, parts of diffusers) still bundle
 # extensions compiled against numpy 1.x ABI. Upgrading to 2.x causes
 # "module compiled against numpy 1.x" runtime errors that are hard to debug.
