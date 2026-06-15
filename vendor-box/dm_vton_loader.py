@@ -32,16 +32,26 @@ log = logging.getLogger("dm-vton")
 # How far below the hips the torso polygon extends, as a fraction of the
 # shoulder→hip distance. Longer garments need more bottom margin.
 HEM_EXTEND: dict[str, float] = {
-    "top":    0.30,
-    "bottom": 1.80,
-    "dress":  1.80,
+    "top":    0.40,
+    "bottom": 2.20,
+    "dress":  2.30,   # extends below knees for proper dress length
 }
 COLLAR_RISE: dict[str, float] = {
-    "top":    0.15,
+    "top":    0.22,
     "bottom": -0.95,
-    "dress":  0.18,
+    "dress":  0.28,   # collar a bit higher so the dress looks worn, not stuck on
 }
-SIDE_PAD = 0.25  # extra width on each side, as fraction of shoulder span
+# Extra width on each side, as fraction of shoulder span. Bigger = the dress
+# extends further past your shoulders (more flowy / draped look).
+SIDE_PAD: dict[str, float] = {
+    "top":    0.30,
+    "bottom": 0.30,
+    "dress":  0.40,
+}
+
+# Polygon smoothing — how fast the polygon catches up to a new pose detection.
+# 1.0 = no smoothing (snaps each frame), 0.3 = lazy & smooth, 0.6 = balanced.
+POLYGON_SMOOTH_ALPHA = 0.55
 
 
 @dataclass
@@ -49,8 +59,10 @@ class DMVTONPipe:
     pipeline: Any                # DMVTONPipeline instance
     device: str
     tensor_dtype: Any            # torch.float32
-    pose: Any = None             # MediaPipe Pose
-    _last_polygon: Any = field(default=None)  # cache last good polygon for missing-pose frames
+    pose: Any = None             # MediaPipe PoseLandmarker (Tasks API)
+    segmenter: Any = None        # MediaPipe ImageSegmenter (selfie body mask)
+    _last_polygon: Any = field(default=None)  # cache last good polygon
+    _smoothed_polygon: Any = field(default=None)  # EMA-smoothed polygon for jitter reduction
 
     def warp(
         self,
@@ -66,12 +78,19 @@ class DMVTONPipe:
         H_MODEL, W_MODEL = 256, 192   # DM-VTON's native resolution
         orig_w, orig_h = frame.size
 
-        # ── 1. Pose detection on the FULL-RES frame ─────────────────
+        # ── 1. Pose + body segmentation on the FULL-RES frame ─────────
         frame_full_rgb = frame.convert("RGB")
         frame_full = np.array(frame_full_rgb)
-        # New MediaPipe Tasks API takes mp.Image not raw numpy
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_full)
         pose_results = self.pose.detect(mp_image)
+        # Selfie segmentation: per-pixel mask of the person silhouette.
+        # The segmenter returns a list of category masks; channel 0 is the
+        # person-vs-background mask (1.0 inside the body).
+        seg_results = self.segmenter.segment(mp_image)
+        try:
+            body_mask = seg_results.confidence_masks[0].numpy_view().astype(np.float32)
+        except (AttributeError, IndexError):
+            body_mask = None
 
         # ── 2. DM-VTON inference at the model's native res ──────────
         frame_small = frame_full_rgb.resize((W_MODEL, H_MODEL))
@@ -105,15 +124,36 @@ class DMVTONPipe:
             # No body in frame → just return the live webcam
             return frame_full_rgb
 
-        mask = np.zeros((orig_h, orig_w), dtype=np.float32)
-        cv2.fillPoly(mask, [polygon], 1.0)
-        # Soft edge so the dress blends into the webcam silhouette instead of
-        # a hard polygon outline
-        blur = int(min(orig_w, orig_h) * 0.05) | 1   # odd kernel
-        mask = cv2.GaussianBlur(mask, (blur, blur), 0)
-        mask = mask[..., None]   # (H, W, 1) for broadcast
+        # EMA-smooth the polygon vertices to reduce frame-to-frame jitter
+        if self._smoothed_polygon is None:
+            self._smoothed_polygon = polygon.astype(np.float32)
+        else:
+            self._smoothed_polygon = (
+                POLYGON_SMOOTH_ALPHA * polygon.astype(np.float32)
+                + (1 - POLYGON_SMOOTH_ALPHA) * self._smoothed_polygon
+            )
+        poly_smoothed = self._smoothed_polygon.astype(np.int32)
 
-        # ── 5. Composite: AI inside the polygon, webcam outside ────
+        # Polygon mask (where the garment CAN go geometrically)
+        poly_mask = np.zeros((orig_h, orig_w), dtype=np.float32)
+        cv2.fillPoly(poly_mask, [poly_smoothed], 1.0)
+        blur = int(min(orig_w, orig_h) * 0.04) | 1
+        poly_mask = cv2.GaussianBlur(poly_mask, (blur, blur), 0)
+
+        # ── 5. Combine with body silhouette so edges follow the body ──
+        # The polygon defines WHERE the dress goes; the body silhouette makes
+        # the mask follow the actual person outline (smooth, curved, not
+        # square). Final mask = polygon ∩ body_silhouette.
+        if body_mask is not None and body_mask.shape[:2] == (orig_h, orig_w):
+            # Soften the body silhouette edge so the composite blends instead of
+            # cutting hard at one-pixel boundaries
+            soft_body = cv2.GaussianBlur(body_mask, (15, 15), 0)
+            mask = poly_mask * soft_body
+        else:
+            mask = poly_mask
+        mask = np.clip(mask, 0.0, 1.0)[..., None]   # (H, W, 1) for broadcast
+
+        # ── 6. Composite: AI render inside mask, webcam outside ────
         composited = ai_full * mask + frame_full * (1 - mask)
         return Image.fromarray(composited.astype(np.uint8))
 
@@ -146,9 +186,9 @@ class DMVTONPipe:
 
         shoulder_span = abs(lsh[0] - rsh[0])
         torso_h = abs((lhp[1] + rhp[1]) / 2 - (lsh[1] + rsh[1]) / 2)
-        side_pad   = int(shoulder_span * SIDE_PAD)
-        collar_dy  = int(torso_h * COLLAR_RISE.get(category, 0.18))
-        hem_dy     = int(torso_h * HEM_EXTEND.get(category, 1.80))
+        side_pad   = int(shoulder_span * SIDE_PAD.get(category, 0.30))
+        collar_dy  = int(torso_h * COLLAR_RISE.get(category, 0.22))
+        hem_dy     = int(torso_h * HEM_EXTEND.get(category, 2.00))
 
         # Order matters for fillPoly — go around the polygon (CW or CCW).
         # MediaPipe's "left" shoulder is on the SUBJECT's left, which appears
@@ -163,22 +203,16 @@ class DMVTONPipe:
         return polygon
 
 
-def _ensure_pose_landmarker_task(parent_dir: Path) -> Path:
-    """Download MediaPipe's pose_landmarker_lite.task file if not on disk.
-    ~6 MB, hosted on Google's CDN — reachable even when HF Hub isn't."""
-    task_path = parent_dir / "pose_landmarker_lite.task"
+def _ensure_mp_task(parent_dir: Path, filename: str, url: str) -> Path:
+    """Download a MediaPipe .task file from Google's CDN if not on disk."""
+    task_path = parent_dir / filename
     if task_path.exists() and task_path.stat().st_size > 100_000:
         return task_path
     parent_dir.mkdir(parents=True, exist_ok=True)
     import urllib.request
-    url = (
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-        "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
-    )
-    log.info("downloading pose_landmarker_lite.task from %s", url)
+    log.info("downloading %s from %s", filename, url)
     urllib.request.urlretrieve(url, str(task_path))
-    log.info("pose_landmarker_lite.task → %s (%d bytes)",
-             task_path, task_path.stat().st_size)
+    log.info("%s → %s (%d bytes)", filename, task_path, task_path.stat().st_size)
     return task_path
 
 
@@ -225,14 +259,40 @@ def load_dm_vton_trt(path: Path) -> DMVTONPipe:
         checkpoints={"warp": str(warp_ckpt), "gen": str(gen_ckpt)},
     ).to(device).eval()
 
-    log.info("loading MediaPipe PoseLandmarker (tasks API)…")
-    task_file = _ensure_pose_landmarker_task(path.parent / "mediapipe")
-    options = mp_vision.PoseLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=str(task_file)),
-        running_mode=mp_vision.RunningMode.IMAGE,
-        num_poses=1,
-    )
-    pose_detector = mp_vision.PoseLandmarker.create_from_options(options)
+    mp_dir = path.parent / "mediapipe"
 
-    log.info("DM-VTON pipeline ready (PyTorch %s on %s, with MediaPipe PoseLandmarker)", dtype, device)
-    return DMVTONPipe(pipeline=pipeline, device=device, tensor_dtype=dtype, pose=pose_detector)
+    log.info("loading MediaPipe PoseLandmarker (tasks API)…")
+    pose_task = _ensure_mp_task(
+        mp_dir, "pose_landmarker_lite.task",
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+        "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+    )
+    pose_detector = mp_vision.PoseLandmarker.create_from_options(
+        mp_vision.PoseLandmarkerOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=str(pose_task)),
+            running_mode=mp_vision.RunningMode.IMAGE,
+            num_poses=1,
+        )
+    )
+
+    log.info("loading MediaPipe ImageSegmenter (selfie body mask)…")
+    seg_task = _ensure_mp_task(
+        mp_dir, "selfie_segmenter.task",
+        "https://storage.googleapis.com/mediapipe-models/image_segmenter/"
+        "selfie_segmenter/float16/latest/selfie_segmenter.task",
+    )
+    segmenter = mp_vision.ImageSegmenter.create_from_options(
+        mp_vision.ImageSegmenterOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=str(seg_task)),
+            running_mode=mp_vision.RunningMode.IMAGE,
+            output_confidence_masks=True,
+            output_category_mask=False,
+        )
+    )
+
+    log.info("DM-VTON pipeline ready (PyTorch %s on %s, with Pose + SelfieSegmentation)",
+             dtype, device)
+    return DMVTONPipe(
+        pipeline=pipeline, device=device, tensor_dtype=dtype,
+        pose=pose_detector, segmenter=segmenter,
+    )
