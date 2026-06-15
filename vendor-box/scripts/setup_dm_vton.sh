@@ -28,13 +28,28 @@ fi
 
 # ── 2. Install DM-VTON extras ──────────────────────────────────────────────
 say "2/3 — install DM-VTON extras"
+# cupy is a CuPy-CUDA GPU array library that DMVTONPipeline uses internally
+# for parts of the warping math. Wheel name depends on the CUDA major version.
+# Try to detect from nvidia-smi; default to cu12 (current vendor box target).
+CUPY_PKG="cupy-cuda12x"
+if command -v nvidia-smi > /dev/null; then
+  CUDA_MAJ=$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+' | grep -oE '[0-9]+' || true)
+  case "$CUDA_MAJ" in
+    11) CUPY_PKG="cupy-cuda11x" ;;
+    12) CUPY_PKG="cupy-cuda12x" ;;
+    *)  echo "  (couldn't detect CUDA major version, defaulting to $CUPY_PKG)" ;;
+  esac
+fi
+echo "  installing $CUPY_PKG"
+
 pip install \
+  "$CUPY_PKG" \
   'tensorboard' \
   'opencv-python-headless>=4.9' \
   'scikit-image' \
   'pillow>=10.0' \
   'tqdm'
-ok "DM-VTON extras installed"
+ok "DM-VTON extras installed (incl. $CUPY_PKG)"
 
 # ── 3. Pretrained checkpoints (MANUAL STEP) ────────────────────────────────
 say "3/3 — pretrained checkpoints"
