@@ -141,9 +141,15 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
         )
     sys.path.insert(0, str(repo_root))
 
-    if not (path / "ckpt" / "densepose").exists():
+    # yisol/IDM-VTON on HuggingFace ships subdirs at the repo root:
+    #   densepose/  humanparsing/  openpose/  unet/  unet_encoder/  vae/ ...
+    # The original gradio_demo expected them under ckpt/ — adjust to the
+    # HF layout, which is what scripts/setup_idm_vton.sh fetches.
+    if not (path / "densepose").exists():
         raise FileNotFoundError(
-            f"IDM-VTON weights not found at {path}. Run scripts/setup_idm_vton.sh first."
+            f"IDM-VTON weights not found at {path}. "
+            f"Expected subdirs: densepose/, humanparsing/, openpose/, unet/, etc. "
+            f"Run scripts/setup_idm_vton.sh."
         )
 
     # Import IDM-VTON's custom modules (only available once sys.path includes the clone)
@@ -210,11 +216,12 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
     )
     pipe.to(device)
 
-    # Pre-processing models (live on CPU + small GPU footprint)
+    # Pre-processing models (live on CPU + small GPU footprint).
+    # HF layout: openpose/, humanparsing/ live at the model root, not under ckpt/.
     log.info("loading OpenPose + HumanParsing pre-processors…")
-    openpose = OpenPose(str(path / "ckpt" / "openpose"))
+    openpose = OpenPose(str(path / "openpose"))
     openpose.preprocessor.body_estimation.model.to(device)
-    parsing = Parsing(str(path / "ckpt" / "humanparsing"))
+    parsing = Parsing(str(path / "humanparsing"))
 
     log.info("IDM-VTON pipeline ready")
     return IDMVTONPipe(
