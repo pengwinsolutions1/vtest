@@ -60,27 +60,19 @@ fi
 warn "missing weight files: ${MISSING[*]}"
 cat <<EOF
 
-DM-VTON's authors distribute their pretrained checkpoints via Google Drive
-links in their README — there's no scriptable URL we can curl.
+DM-VTON is an OPTIONAL quality upgrade for LIVE mode (~50ms/frame instead
+of the IDM-VTON fallback at ~3-5s/frame). The service runs fine without it.
 
-To finish setup:
-
+If you want the full DM-VTON speed later:
   1. Open https://github.com/KiseKloset/DM-VTON#-pretrained-models
-  2. Download the checkpoints linked there. The ones you need are:
-       ${MISSING[*]}
-     (also any 'warp' and 'gen' / 'tryon' model the README mentions for
-      their best-quality config)
-  3. Move the downloaded files to:
-       $TARGET
-  4. Re-run this script — it will skip the download and proceed.
+  2. Download the checkpoints from the Google Drive links there
+  3. Place them at: $TARGET
+       (filenames: ${MISSING[*]})
+  4. Restart uvicorn — /healthz will then report "dm_vton": true
 
-If the README has renamed the checkpoints (the project files shift across
-releases), put them in the target dir under the names listed above (or
-adjust dm_vton_loader.py to match the new names).
-
-Alternative: a HuggingFace community mirror of DM-VTON may exist. If you
-find one, you can also do:
-  huggingface-cli download <repo-id> --local-dir "$TARGET"
+For now, this script is exiting successfully. The /ws/live endpoint will
+use IDM-VTON at low-step config as a quasi-live fallback.
 
 EOF
-die "manual download step required"
+ok "DM-VTON skipped (optional) — using IDM-VTON live fallback"
+exit 0

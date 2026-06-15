@@ -276,37 +276,65 @@ async def get_prediction(prediction_id: str) -> dict[str, Any]:
 # arrive while busy. Customer perceives ~15-20fps on a single RTX 4080.
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket) -> None:
+    """LIVE try-on stream.
+
+    Two modes, picked automatically based on which model is loaded:
+      - dm_vton (preferred):  ~50-100 ms per frame → ~15-20 fps perceived
+      - idm_vton (fallback):  ~3-5 sec per frame   → "quasi-live"
+
+    Either way the customer sees a real photoreal-quality render of
+    themselves wearing the garment, updated continuously as they move.
+    """
     await ws.accept()
-    if PIPES.dm_vton is None:
-        await ws.send_json({"error": "DM-VTON not loaded on this box"})
+    if PIPES.dm_vton is None and PIPES.idm_vton is None:
+        await ws.send_json({"error": "No live VTON model loaded on this box"})
         await ws.close()
         return
 
-    log.info("ws/live connected")
+    mode = "dm_vton" if PIPES.dm_vton is not None else "idm_vton_lowstep"
+    log.info("ws/live connected, mode=%s", mode)
+    await ws.send_json({"ok": True, "mode": mode})
+
     garment_state: dict[str, Any] = {"image": None, "category": "dress"}
     busy = False
+
+    async def _process_frame(frame: "Image.Image") -> "Image.Image":
+        """Pick the right model based on what's loaded."""
+        if PIPES.dm_vton is not None:
+            return await asyncio.to_thread(
+                PIPES.dm_vton.warp,
+                frame=frame,
+                garment=garment_state["image"],
+                category=garment_state["category"],
+            )
+        # IDM-VTON fallback: run at 8 inference steps for speed (vs 30 for
+        # snapshot quality). Tradeoff is slightly less crisp output but
+        # 3-5s per frame instead of 15-25s.
+        return await asyncio.to_thread(
+            PIPES.idm_vton.run,
+            selfie=frame,
+            garment=garment_state["image"],
+            category=garment_state["category"],
+            n_steps=8,
+            guidance_scale=2.0,
+        )
 
     try:
         while True:
             msg = await ws.receive()
             if "bytes" in msg and msg["bytes"]:
-                # Frame from webcam
                 if busy:
-                    continue  # drop, server still warping the previous frame
+                    continue  # drop, still working on the previous frame
                 busy = True
                 try:
                     from PIL import Image
                     frame = Image.open(io.BytesIO(msg["bytes"])).convert("RGB")
                     if garment_state["image"] is None:
-                        # No garment selected yet — echo the frame back unmodified
-                        out_bytes = msg["bytes"]
+                        out_bytes = msg["bytes"]  # echo back until garment is picked
                     else:
-                        out = await asyncio.to_thread(
-                            PIPES.dm_vton.warp,
-                            frame=frame,
-                            garment=garment_state["image"],
-                            category=garment_state["category"],
-                        )
+                        t0 = time.time()
+                        out = await _process_frame(frame)
+                        log.debug("frame processed in %.2fs", time.time() - t0)
                         buf = io.BytesIO()
                         out.save(buf, format="JPEG", quality=85)
                         out_bytes = buf.getvalue()
@@ -334,15 +362,26 @@ async def ws_live(ws: WebSocket) -> None:
 # ============================================================================
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
+    # `snapshot` only needs IDM-VTON — Wan 2.1 is an OPTIONAL video upgrade
+    # on top of the still. The webapp orchestrator finishes snapshot jobs
+    # successfully with just the still when Wan 2.1 is unavailable.
+    # `live` is true if EITHER DM-VTON or IDM-VTON is loaded — the WebSocket
+    # handler falls back to IDM-VTON low-step when DM-VTON isn't installed.
     return {
         "ok": True,
         "cuda": PIPES.cuda_available,
-        "snapshot": PIPES.idm_vton is not None and PIPES.wan_i2v is not None,
-        "live": PIPES.dm_vton is not None,
-        "model_versions": {
-            "idm_vton": "yisol/IDM-VTON",
-            "wan_i2v": "Wan-Video/Wan2.1",
-            "dm_vton": "KiseKloset/DM-VTON",
+        "snapshot": PIPES.idm_vton is not None,
+        "live": PIPES.dm_vton is not None or PIPES.idm_vton is not None,
+        "live_mode": (
+            "dm_vton" if PIPES.dm_vton is not None
+            else "idm_vton_lowstep" if PIPES.idm_vton is not None
+            else "unavailable"
+        ),
+        "video": PIPES.wan_i2v is not None,
+        "models_loaded": {
+            "idm_vton": PIPES.idm_vton is not None,
+            "wan_i2v": PIPES.wan_i2v is not None,
+            "dm_vton": PIPES.dm_vton is not None,
         },
     }
 
