@@ -127,7 +127,57 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   padding: 4px;
 }
 
-/* --- LIVE status (overlay states only) --- */
+/* --- Photo-booth snapshot UX --- */
+.stage-video,
+.stage-snapshot,
+.stage-result {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+.stage-video { transform: scaleX(-1); }    /* mirror selfie */
+.stage-video.hidden { display: none; }
+.stage-snapshot, .stage-result { display: block; }
+
+.capture-flash {
+  position: fixed;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 10;
+  animation: flash 250ms ease-out forwards;
+}
+@keyframes flash {
+  0%   { opacity: 0; }
+  20%  { opacity: 0.75; }
+  100% { opacity: 0; }
+}
+
+.try-again-btn {
+  position: fixed;
+  bottom: calc(120px + max(env(safe-area-inset-bottom), 12px));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 28px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  z-index: 9;
+}
+.try-again-btn:active { transform: translateX(-50%) scale(0.96); }
+.try-again-btn-inline { position: static; transform: none; margin-top: 8px; pointer-events: auto; }
+.try-again-btn-inline:active { transform: scale(0.96); }
+
+/* --- Overlay states (processing / failed) --- */
 .processing-overlay {
   position: fixed;
   inset: 0;

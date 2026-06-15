@@ -1,20 +1,20 @@
 'use client';
-// Customer page — LIVE virtual try-on, nothing else.
+// Customer page — photoreal snapshot try-on with IDM-VTON.
 //
-// Webcam streams to the vendor-box's /ws/live WebSocket. The vendor box runs
-// DM-VTON (~50ms/frame on RTX 4080) and returns each rendered frame. We
-// display the rendered frame on a <canvas>. Customer sees themselves wearing
-// the selected garment in real time as they move.
+// Flow:
+//   1. Live webcam preview (mirrored, full-screen)
+//   2. User picks a dress from the bottom strip
+//   3. Snapshot captured from the webcam
+//   4. Snapshot + garment posted to /api/tryon
+//   5. Job polled every 1.5s while AI runs (~15-25s on vendor box)
+//   6. Result image fills the screen — customer can browse another dress
+//      to swap in a fresh try-on, or "Back to camera" to retake
 //
-// No snapshots. No "Try On" button. No polling. No photo-booth flow.
-// Picking a dress IS trying it on — instantly, live.
-//
-// The /api/tryon + /api/jobs endpoints are still in the codebase but unused
-// by this page. They're kept for the admin upload tool and any future
-// snapshot-mode product.
+// The LIVE WebSocket mode was tried first; it was real-time but the
+// quality didn't reach what's expected. IDM-VTON gives photoreal stills
+// — the closest to "real wearing" look that open AI currently produces.
 
-import { useEffect, useState } from 'react';
-import LiveStream from './components/LiveStream';
+import { useEffect, useRef, useState } from 'react';
 
 type Category = 'top' | 'bottom' | 'dress';
 type Gender = 'men' | 'women' | 'unisex';
@@ -28,28 +28,62 @@ interface Garment {
   gender: Gender;
 }
 
-interface BackendInfo {
-  live_available: boolean;
-  live_mode: 'dm_vton' | 'idm_vton_lowstep' | 'unavailable';
-  ws_url: string | null;
-  backend: string;
-  error?: string;
+interface JobStatus {
+  id: string;
+  status: 'queued' | 'still' | 'video' | 'succeeded' | 'failed';
+  still_image_url?: string | null;
+  video_url?: string | null;
+  error?: string | null;
 }
 
 const GENDER_LABELS: Record<Gender, string> = { men: 'Men', women: 'Women', unisex: 'Unisex' };
 const GENDER_EMOJI:  Record<Gender, string> = { men: '🧔', women: '👩', unisex: '🧑' };
 
+type Phase = 'live' | 'capturing' | 'submitting' | 'processing' | 'result' | 'failed';
+
+const POLL_INTERVAL_MS = 1500;
+
 export default function Home() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pollTimerRef = useRef<number | null>(null);
+
   const [garments, setGarments] = useState<Garment[]>([]);
   const [activeGender, setActiveGender] = useState<Gender | 'all'>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
+  const [phase, setPhase] = useState<Phase>('live');
+  const [status, setStatus] = useState('starting…');
   const [fatal, setFatal] = useState<string | null>(null);
+
+  const [snapshotDataUrl, setSnapshotDataUrl] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
 
   const selectedGarment = garments.find(g => g.id === selectedId) || null;
 
-  // Fetch the garment catalog + AI backend capabilities on mount
+  // Camera + catalog setup
   useEffect(() => {
+    let mounted = true;
+    let stream: MediaStream | null = null;
+
+    async function setup() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+          audio: false,
+        });
+      } catch (e: any) {
+        setFatal(`Camera denied: ${e.name}. Open in a desktop browser with camera access.`);
+        return;
+      }
+      if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
+      const v = videoRef.current!;
+      v.srcObject = stream;
+      await v.play();
+      setStatus('tap a dress to try it on');
+    }
+    setup();
+
     fetch('/api/garments')
       .then(r => r.json())
       .then(d => {
@@ -57,71 +91,150 @@ export default function Home() {
         setGarments(list);
         if (list.length) setSelectedId(list[0].id);
       })
-      .catch(e => setFatal(`catalog load failed: ${e.message}`));
+      .catch(e => setStatus(`catalog load failed: ${e.message}`));
 
-    fetch('/api/backend-info')
-      .then(r => r.json())
-      .then((info: BackendInfo) => setBackendInfo(info))
-      .catch(e => setFatal(`backend-info failed: ${e.message}`));
+    return () => {
+      mounted = false;
+      stream?.getTracks().forEach(t => t.stop());
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    };
   }, []);
 
-  // ── Render branches ────────────────────────────────────────────────────
-  if (fatal) {
-    return (
-      <div className="stage">
-        <div className="processing-overlay" style={{ pointerEvents: 'auto' }}>
-          <div className="processing-text">Cannot start</div>
-          <div className="processing-sub">{fatal}</div>
-        </div>
-      </div>
-    );
+  // Take a snapshot from the live video — mirrored to match what the user sees.
+  async function captureSnapshot(): Promise<{ blob: Blob; dataUrl: string } | null> {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth) return null;
+    const w = v.videoWidth, h = v.videoHeight;
+    const canvas = snapshotCanvasRef.current || document.createElement('canvas');
+    snapshotCanvasRef.current = canvas;
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d')!;
+    ctx.save();
+    ctx.translate(w, 0); ctx.scale(-1, 1);
+    ctx.drawImage(v, 0, 0, w, h);
+    ctx.restore();
+    const blob: Blob | null = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
+    if (!blob) return null;
+    return { blob, dataUrl: canvas.toDataURL('image/jpeg', 0.92) };
   }
 
-  // Backend info still loading
-  if (!backendInfo) {
-    return (
-      <div className="stage">
-        <div className="processing-overlay">
-          <div className="spinner" />
-          <div className="processing-text">Connecting to AI…</div>
-        </div>
-      </div>
-    );
+  async function tryOnDress(g: Garment) {
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    setJobId(null);
+    setJobStatus(null);
+    setSelectedId(g.id);
+    setPhase('capturing');
+    setStatus('hold still…');
+    await new Promise(r => setTimeout(r, 250));
+
+    const snap = await captureSnapshot();
+    if (!snap) {
+      setStatus('snapshot failed — webcam not ready');
+      setPhase('live');
+      return;
+    }
+    setSnapshotDataUrl(snap.dataUrl);
+    setPhase('submitting');
+    setStatus('sending to AI…');
+
+    const form = new FormData();
+    form.append('selfie', snap.blob, 'selfie.jpg');
+    form.append('garment_id', g.id);
+
+    try {
+      const r = await fetch('/api/tryon', { method: 'POST', body: form });
+      const data = await r.json();
+      if (!r.ok) {
+        setStatus(`AI backend rejected: ${data.error}`);
+        setPhase('failed');
+        return;
+      }
+      setJobId(data.id);
+      setPhase('processing');
+      setStatus('generating your photo (~20 sec)…');
+    } catch (e: any) {
+      setStatus(`network: ${e.message}`);
+      setPhase('failed');
+    }
   }
 
-  // Backend reachable but no LIVE model loaded
-  if (!backendInfo.live_available || !backendInfo.ws_url) {
-    return (
-      <div className="stage">
-        <div className="processing-overlay" style={{ pointerEvents: 'auto' }}>
-          <div className="processing-text">Live mode unavailable</div>
-          <div className="processing-sub">
-            {backendInfo.error || 'No LIVE model loaded on the vendor box. Start uvicorn and ensure DM-VTON or IDM-VTON is ready.'}
-          </div>
-        </div>
-      </div>
-    );
+  // Poll while a job is active. Stop on terminal states.
+  useEffect(() => {
+    if (!jobId) return;
+    if (phase !== 'processing' && phase !== 'result') return;
+
+    let stopped = false;
+    async function poll() {
+      try {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        const data: JobStatus = await r.json();
+        if (stopped) return;
+        setJobStatus(data);
+        if (data.status === 'succeeded') {
+          setPhase('result');
+          setStatus('done — looking good');
+        } else if (data.status === 'failed') {
+          setPhase('failed');
+          setStatus(`failed: ${data.error || 'unknown error'}`);
+        } else if (data.status === 'still') {
+          setStatus('generating your photo (~20 sec)…');
+        } else if (data.status === 'video' && data.still_image_url) {
+          setPhase('result');
+          setStatus('photo ready — adding motion…');
+        }
+      } catch (e: any) {
+        console.warn('[poll]', e.message);
+      }
+    }
+
+    poll();
+    const id = window.setInterval(poll, POLL_INTERVAL_MS);
+    pollTimerRef.current = id;
+    return () => { stopped = true; clearInterval(id); pollTimerRef.current = null; };
+  }, [jobId, phase]);
+
+  function backToCamera() {
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    setJobId(null); setJobStatus(null); setSnapshotDataUrl(null);
+    setPhase('live');
+    setStatus('tap a dress to try it on');
   }
 
-  // ── Happy path: LIVE stream + dress picker ────────────────────────────
   const visibleList = activeGender === 'all'
     ? garments
     : garments.filter(g => g.gender === activeGender || g.gender === 'unisex');
   const presentGenders: Gender[] = Array.from(new Set(garments.map(g => g.gender)))
     .filter(g => g !== 'unisex') as Gender[];
 
+  const showLiveVideo = phase === 'live' || phase === 'capturing';
+  const showCaptured  = phase === 'submitting' || phase === 'processing';
+  const showResult    = phase === 'result';
+
   return (
     <div className="stage">
-      {/* The actual LIVE stream — canvas that displays AI-rendered frames */}
-      <LiveStream
-        wsUrl={backendInfo.ws_url}
-        garmentUrl={selectedGarment?.url || null}
-        garmentCategory={selectedGarment?.category || 'dress'}
-        liveMode={backendInfo.live_mode}
+      <video
+        ref={videoRef}
+        playsInline muted autoPlay
+        className={`stage-video ${showLiveVideo ? '' : 'hidden'}`}
       />
 
-      {/* Gender chips — top-right */}
-      {presentGenders.length > 1 && (
+      {showCaptured && snapshotDataUrl && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={snapshotDataUrl} alt="" className="stage-snapshot" />
+      )}
+
+      {showResult && jobStatus?.video_url ? (
+        <video src={jobStatus.video_url} autoPlay loop muted playsInline className="stage-result" />
+      ) : showResult && jobStatus?.still_image_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={jobStatus.still_image_url} alt="" className="stage-result" />
+      ) : null}
+
+      {phase === 'capturing' && <div className="capture-flash" />}
+
+      <div className="status-pill">{fatal || status}</div>
+
+      {presentGenders.length > 1 && phase === 'live' && (
         <div className="gender-chips">
           <button
             className={`g-chip ${activeGender === 'all' ? 'active' : ''}`}
@@ -137,14 +250,45 @@ export default function Home() {
         </div>
       )}
 
-      {/* Dress picker — bottom strip */}
+      {/* Processing overlay */}
+      {(phase === 'submitting' || phase === 'processing') && (
+        <div className="processing-overlay">
+          <div className="spinner" />
+          <div className="processing-text">
+            {phase === 'submitting' ? 'Uploading…' : 'Generating your photo (~20 sec)…'}
+          </div>
+          {selectedGarment && (
+            <div className="processing-sub">Trying on {selectedGarment.name}</div>
+          )}
+        </div>
+      )}
+
+      {/* Result actions */}
+      {showResult && (
+        <button className="try-again-btn" onClick={backToCamera}>
+          Back to camera
+        </button>
+      )}
+
+      {/* Failed actions */}
+      {phase === 'failed' && (
+        <div className="processing-overlay" style={{ pointerEvents: 'auto' }}>
+          <div className="processing-text">Try-on failed</div>
+          <div className="processing-sub">{status}</div>
+          <button className="try-again-btn try-again-btn-inline" onClick={backToCamera}>
+            Back to camera
+          </button>
+        </div>
+      )}
+
       <div className="picker">
         {visibleList.map(g => (
           <button
             key={g.id}
             className={`g-thumb ${selectedId === g.id ? 'selected' : ''}`}
-            onClick={() => setSelectedId(g.id)}
+            onClick={() => tryOnDress(g)}
             title={g.name}
+            disabled={phase === 'capturing' || phase === 'submitting'}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={g.url} alt={g.name} loading="lazy" />
