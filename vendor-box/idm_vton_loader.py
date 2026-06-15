@@ -72,7 +72,10 @@ class IDMVTONPipe:
         # Agnostic mask: the region where the new garment will be painted in.
         # For dresses → torso + upper legs. For top → torso + upper arms. Etc.
         # IDM-VTON ships a helper for this.
-        from preprocess.humanparsing.run_parsing import get_mask_location
+        # get_mask_location lives in gradio_demo/utils_mask.py — the IDM-VTON
+        # repo doesn't expose it as a top-level package, so we import via the
+        # gradio_demo dir path that we added to sys.path in load_idm_vton().
+        from utils_mask import get_mask_location
         agnostic_mask_pil, agnostic_mask = get_mask_location(
             "hd", idm_category, parsed_image.resize((384, 512)), keypoints,
         )
@@ -133,13 +136,16 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
 
     # The IDM-VTON repo must be cloned next to vendor-box/ (i.e. as sibling
     # of this file's package). Add it to sys.path so its `src/` and
-    # `preprocess/` imports resolve.
+    # `preprocess/` imports resolve. Also add gradio_demo/ because that's
+    # where utils_mask.get_mask_location lives (the IDM-VTON authors didn't
+    # promote it to a package, it's just a script-level helper).
     repo_root = Path(__file__).resolve().parent / "IDM-VTON"
     if not (repo_root / "src" / "tryon_pipeline.py").exists():
         raise FileNotFoundError(
             f"IDM-VTON repo not found at {repo_root}. Run scripts/setup_idm_vton.sh first."
         )
     sys.path.insert(0, str(repo_root))
+    sys.path.insert(0, str(repo_root / "gradio_demo"))
 
     # yisol/IDM-VTON on HuggingFace ships subdirs at the repo root:
     #   densepose/  humanparsing/  openpose/  unet/  unet_encoder/  vae/ ...
@@ -156,7 +162,10 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
     from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
     from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
     from src.unet_hacked_tryon import UNet2DConditionModel
-    from preprocess.humanparsing.aigc_run_parsing import Parsing
+    # In the cloned IDM-VTON repo:
+    #   preprocess/humanparsing/run_parsing.py  → class Parsing
+    #   preprocess/openpose/run_openpose.py      → class OpenPose
+    from preprocess.humanparsing.run_parsing import Parsing
     from preprocess.openpose.run_openpose import OpenPose
 
     from transformers import (
