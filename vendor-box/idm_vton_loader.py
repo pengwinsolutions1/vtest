@@ -315,22 +315,49 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
         unet_encoder=unet_encoder,
         torch_dtype=dtype,
     )
-    # CPU offloading strategy:
-    #   - GPU >= 20 GB: everything stays on GPU, fastest path.
-    #   - GPU <  20 GB: enable_model_cpu_offload() — components offload to
-    #                   CPU when not in use. UNet stays on GPU during the
-    #                   diffusion loop, so it's much faster than sequential
-    #                   offload. ~3-4x faster overall.
-    #   - For model_cpu_offload, the IP-Adapter resampler (unet.encoder_hid_proj)
-    #     isn't auto-hooked — accelerate's pre-forward hook is on `unet` only,
-    #     and the pipeline calls encoder_hid_proj directly. Pre-move it to GPU
-    #     manually so it's already there when called.
+    # Custom partial CPU offload for 16 GB cards (RTX 4060 Ti / 4070).
+    #
+    # enable_model_cpu_offload() hit a device-mismatch error: the pipeline
+    # calls unet.encoder_hid_proj (IP-Adapter resampler submodule) BEFORE
+    # unet.__call__, so accelerate's pre-forward hook on `unet` didn't fire
+    # and that submodule stayed on CPU while inputs were on CUDA. The
+    # pre-move workaround didn't stick — accelerate's bookkeeping fights
+    # manual .to(device) on hooked submodules.
+    #
+    # New strategy: keep the UNet stack (unet + unet_encoder) permanently
+    # on GPU so all UNet submodules (including encoder_hid_proj) are always
+    # on GPU. Only the lighter components (text_encoder × 2, vae,
+    # image_encoder) offload — they swap in for their single forward each.
+    #
+    # VRAM budget (FP16, 16 GB card):
+    #   unet                ~5 GB resident
+    #   unet_encoder        ~5 GB resident
+    #   vae+text+image      ~1 GB peak (one at a time, accelerate hook)
+    #   activations 768x1024 ~3 GB peak
+    #   total peak          ~14 GB — fits in 16 GB with headroom
     if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory < 20 * 1024**3:
-        log.info("enabling MODEL CPU offload (GPU < 20 GB) — UNet stays resident during diffusion")
-        pipe.enable_model_cpu_offload()
-        if hasattr(pipe.unet, "encoder_hid_proj") and pipe.unet.encoder_hid_proj is not None:
-            log.info("pre-moving unet.encoder_hid_proj to %s (IP-Adapter resampler hook fix)", device)
-            pipe.unet.encoder_hid_proj.to(device)
+        log.info("partial CPU offload: UNet stack resident, light components swap in on demand")
+        from accelerate import cpu_offload_with_hook
+        # UNet + UNet encoder stay on GPU (all submodules including
+        # encoder_hid_proj are now GPU-resident).
+        pipe.unet.to(device)
+        if hasattr(pipe, "unet_encoder") and pipe.unet_encoder is not None:
+            pipe.unet_encoder.to(device)
+        # The lighter components: hook them to CPU, hook swaps to GPU
+        # only during forward. Chain hooks so each previous one offloads
+        # before the next loads (avoids stacking VRAM use).
+        prev_hook = None
+        for name in ("text_encoder", "text_encoder_2", "image_encoder", "vae"):
+            component = getattr(pipe, name, None)
+            if component is None:
+                continue
+            component.to("cpu")
+            _, prev_hook = cpu_offload_with_hook(
+                component, execution_device=device, prev_module_hook=prev_hook,
+            )
+        # Stash the last hook so the post-forward also drops back to CPU
+        # cleanly between inferences.
+        pipe._offload_last_hook = prev_hook
     else:
         pipe.to(device)
 
