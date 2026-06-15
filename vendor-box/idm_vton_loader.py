@@ -45,11 +45,15 @@ class IDMVTONPipe:
         garment: Image.Image,
         category: Literal["top", "bottom", "dress"],
         garment_description: str = "garment",
-        # 30 is IDM-VTON's training default; 8 trades a bit of finger/edge
-        # detail for ~4x speedup. Tunable via IDM_VTON_STEPS env var read by
-        # the server, with a sane default of 8 for snapshot-mode kiosk UX.
-        n_steps: int = 8,
-        guidance_scale: float = 2.0,
+        # 30 is IDM-VTON's training default. 20 gives near-training-quality
+        # output with ~33% speedup. Hands/garment texture stay crisp.
+        # Drop to 8 if you need <20s response; bump to 30 for absolute max.
+        # Tunable via IDM_VTON_STEPS env var read by the server.
+        n_steps: int = 20,
+        # IDM-VTON's gradio_demo uses 2.0; bumping to 2.5 strengthens the
+        # garment colour/texture fidelity at the cost of slightly less
+        # photo-real background detail.
+        guidance_scale: float = 2.5,
         seed: int = 42,
     ) -> Image.Image:
         """One photoreal try-on inference. ~15-25 sec on RTX 4080.
@@ -163,15 +167,14 @@ class IDMVTONPipe:
                 guidance_scale=guidance_scale,
             )[0]
 
-        # Paste the AI result back into the original-aspect-ratio frame so
-        # the customer's surroundings (room, background outside the crop)
-        # stay visible — otherwise we'd return a 3:4 image into a 16:9 UI.
-        result_img = images[0]
-        ow, oh, left, top, tw, th = self._last_crop
-        result_in_crop = result_img.resize((tw, th))
-        canvas = selfie.convert("RGB").copy()
-        canvas.paste(result_in_crop, (left, top))
-        return canvas
+        # Return the AI result at native 768x1024 — no paste-back into the
+        # webcam frame. The paste-back lost ~30-40% of the resolution
+        # because the cropped webcam region is only ~540x720, and pasting
+        # the 768x1024 AI image into that smaller area downsamples it.
+        # For best quality we keep the full SDXL output. The customer's
+        # face / hair are still preserved by the IP-adapter, just framed
+        # against the AI-generated body+background rather than the webcam.
+        return images[0]
 
 
 def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
