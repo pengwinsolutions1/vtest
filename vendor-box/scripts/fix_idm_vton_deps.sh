@@ -16,10 +16,15 @@ die() { printf "\033[1;31m  ✗ %s\033[0m\n" "$*"; exit 1; }
 
 [[ "${VIRTUAL_ENV:-}" ]] || die "activate the venv first: source venv/bin/activate"
 
-say "downgrading diffusers + transformers to IDM-VTON's pinned versions"
+say "downgrading diffusers + transformers + huggingface_hub for IDM-VTON"
+# IDM-VTON pins:
+#   diffusers==0.25.0   transformers==4.36.2   accelerate==0.25.0
+# diffusers 0.25 imports `huggingface_hub.cached_download`, removed in
+# huggingface_hub 0.27. Pin hub <0.26 to keep that import alive.
 pip install \
   'diffusers==0.25.0' \
   'transformers==4.36.2' \
-  'accelerate==0.25.0'
+  'accelerate==0.25.0' \
+  'huggingface_hub<0.26'
 
 ok "done — restart uvicorn; IDM-VTON should now load"
