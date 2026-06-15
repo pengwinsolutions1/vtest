@@ -54,8 +54,13 @@ say "3/3 — download model weights (~10 GB, can take 10-20 min)"
 TARGET="${VENDORBOX_MODELS_DIR:-$HERE/data/models}/idm-vton"
 mkdir -p "$TARGET"
 
-# Use huggingface-cli (preferred) or fall back to a Python snapshot_download
-if command -v huggingface-cli > /dev/null; then
+# Prefer `hf` (new HF CLI from huggingface_hub >=0.27). Fall back to legacy
+# `huggingface-cli` for older installs, then to Python snapshot_download.
+if command -v hf > /dev/null; then
+  hf download yisol/IDM-VTON \
+    --local-dir "$TARGET" \
+    --exclude "*.md" "*.txt"
+elif command -v huggingface-cli > /dev/null; then
   huggingface-cli download yisol/IDM-VTON \
     --local-dir "$TARGET" \
     --exclude "*.md" "*.txt"
