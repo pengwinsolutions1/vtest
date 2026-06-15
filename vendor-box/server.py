@@ -73,32 +73,41 @@ def _load_pipelines() -> None:
             return
         PIPES.device = "cuda"
 
+        def _try_load(name: str, loader_fn):
+            """Run a loader, log appropriately based on exception type.
+
+            NotImplementedError → expected TODO state, log as WARNING (the
+            user hasn't wired the real model integration yet). Anything else
+            → genuine failure, log as ERROR with stack trace.
+            """
+            try:
+                return loader_fn()
+            except NotImplementedError as e:
+                log.warning("%s: not implemented yet (TODO) — %s", name, e)
+            except Exception as e:
+                log.exception("%s load failed: %s", name, e)
+            return None
+
         # ── IDM-VTON (snapshot still) ────────────────────────────────
-        try:
-            from idm_vton_loader import load_idm_vton  # provided in repo
-            log.info("loading IDM-VTON…")
-            PIPES.idm_vton = load_idm_vton(MODELS_DIR / "idm-vton", device="cuda")
-            log.info("IDM-VTON ready")
-        except Exception as e:
-            log.exception("IDM-VTON load failed: %s", e)
+        log.info("loading IDM-VTON…")
+        PIPES.idm_vton = _try_load("IDM-VTON", lambda: (
+            __import__("idm_vton_loader").load_idm_vton(MODELS_DIR / "idm-vton", device="cuda")
+        ))
+        if PIPES.idm_vton: log.info("IDM-VTON ready")
 
         # ── Wan 2.1 i2v (snapshot video) ─────────────────────────────
-        try:
-            from wan21_loader import load_wan_i2v
-            log.info("loading Wan 2.1 i2v…")
-            PIPES.wan_i2v = load_wan_i2v(MODELS_DIR / "wan2.1", device="cuda")
-            log.info("Wan 2.1 i2v ready")
-        except Exception as e:
-            log.exception("Wan 2.1 load failed: %s", e)
+        log.info("loading Wan 2.1 i2v…")
+        PIPES.wan_i2v = _try_load("Wan 2.1", lambda: (
+            __import__("wan21_loader").load_wan_i2v(MODELS_DIR / "wan2.1", device="cuda")
+        ))
+        if PIPES.wan_i2v: log.info("Wan 2.1 i2v ready")
 
         # ── DM-VTON (live streaming) ─────────────────────────────────
-        try:
-            from dm_vton_loader import load_dm_vton_trt
-            log.info("loading DM-VTON (TensorRT)…")
-            PIPES.dm_vton = load_dm_vton_trt(MODELS_DIR / "dm-vton")
-            log.info("DM-VTON live pipeline ready")
-        except Exception as e:
-            log.exception("DM-VTON load failed: %s", e)
+        log.info("loading DM-VTON (TensorRT)…")
+        PIPES.dm_vton = _try_load("DM-VTON", lambda: (
+            __import__("dm_vton_loader").load_dm_vton_trt(MODELS_DIR / "dm-vton")
+        ))
+        if PIPES.dm_vton: log.info("DM-VTON live pipeline ready")
 
     except ImportError as e:
         log.error("Required Python deps missing: %s", e)
