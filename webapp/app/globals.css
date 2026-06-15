@@ -129,13 +129,23 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 
 /* --- Photo-booth snapshot UX --- */
 .stage-video,
-.stage-snapshot,
-.stage-result {
+.stage-snapshot {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  background: #000;
+}
+/* The AI result is a 3:4 portrait — fit the WHOLE image in the viewport
+   (letterboxed if needed) so the customer sees the full head-to-toe view,
+   not a tightly-cropped chest shot on a 16:9 monitor. */
+.stage-result {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   background: #000;
 }
 .stage-video { transform: scaleX(-1); }    /* mirror selfie */
