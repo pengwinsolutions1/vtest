@@ -57,7 +57,19 @@ python3 --version
 python3 -m venv venv        # or python3.11 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt   # ~3-5 min, CUDA wheels
+
+# Two-step install — minimal first to verify the web service comes up,
+# then full set with CUDA torch + diffusers (~3-5 min, ~2.5 GB).
+pip install -r requirements-minimal.txt   # 30 sec
+# Verify: start the service, then in another terminal:
+#   curl http://localhost:8000/healthz
+# Should return {"ok": true, ...}. Stop the server.
+pip install -r requirements.txt
+
+# If the full install fails with "no matching distribution" for a specific
+# package, check that package's PyPI page for which Python versions have
+# wheels. The torch+cu121 wheels in particular only build for Python 3.9-3.12
+# on Linux/Windows x86_64 — they will NOT install on macOS or Python 3.13.
 
 # 3. (Eventually) download model weights — ~25 GB, one-time
 python scripts/download_models.py

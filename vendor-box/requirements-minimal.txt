@@ -1,0 +1,14 @@
+# Minimal install — just the web service. Lets you verify the network
+# plumbing (Mac → NVIDIA reachability) before fighting with CUDA/torch deps.
+#
+# Service will start; /healthz reports {"snapshot": false, "live": false}
+# because the AI loaders raise NotImplementedError without the full deps.
+#
+# After this works, install the full set: `pip install -r requirements.txt`
+
+fastapi>=0.110,<1
+uvicorn[standard]>=0.30
+pydantic>=2.6,<3
+httpx>=0.27
+python-multipart>=0.0.9
+pillow>=10.0

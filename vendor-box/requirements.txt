@@ -1,36 +1,44 @@
-# Pinned for CUDA 12.1 on the vendor box. DO NOT install on Mac dev (CUDA-only).
-# Run: pip install -r requirements.txt
+# Pragmatic install constraints for the vendor box.
+#
+# We use lower bounds (>=) instead of exact pins because pinning to a single
+# version forces pip to find that exact wheel for your Python + OS + arch,
+# which often fails. Lower bounds let pip pick a compatible set.
+#
+# Tested combination on RTX 4080 / Ubuntu 22.04 / Python 3.10:
+#   torch 2.5.1 + cu121, numpy 1.26.4, diffusers 0.31.0
+#
+# DO NOT install on Mac — torch+cu121 wheels are Linux/Windows x86_64 only.
 
-# Web service
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-pydantic==2.10.4
-httpx==0.28.1
-python-multipart==0.0.20
+# ── Web service ────────────────────────────────────────────────────────────
+fastapi>=0.110,<1
+uvicorn[standard]>=0.30
+pydantic>=2.6,<3
+httpx>=0.27
+python-multipart>=0.0.9
 
-# Image / video processing
-pillow==11.0.0
-opencv-python-headless==4.10.0.84
-numpy==2.1.3
+# ── Image / video / numerics ──────────────────────────────────────────────
+pillow>=10.0
+opencv-python-headless>=4.9
+# Keep numpy < 2 — many AI libs (mediapipe, parts of diffusers) still bundle
+# extensions compiled against numpy 1.x ABI. Upgrading to 2.x causes
+# "module compiled against numpy 1.x" runtime errors that are hard to debug.
+numpy>=1.24,<2
 
-# Torch — CUDA 12.1 wheels. Pin to versions tested with the models below.
+# ── Torch — CUDA 12.1 wheels ──────────────────────────────────────────────
+# Lower bound only; pip will pick the latest cu121 wheel that matches your Python.
 --extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.5.1+cu121
-torchvision==0.20.1+cu121
+torch>=2.4,<3
+torchvision>=0.19,<1
 
-# Diffusers / transformers for IDM-VTON + Wan 2.1
-diffusers==0.31.0
-transformers==4.46.3
-accelerate==1.2.1
-safetensors==0.4.5
-einops==0.8.0
+# ── Diffusers + transformers stack ────────────────────────────────────────
+diffusers>=0.30
+transformers>=4.45
+accelerate>=1.0
+safetensors>=0.4
+einops>=0.7
 
-# Tensor-RT runtime for DM-VTON live mode (~50ms/frame on RTX 4080).
-# Install separately via NVIDIA's apt repo — do NOT pip-install (pip wheels are stale).
-# See README setup section. The dm_vton_loader imports `tensorrt` from system.
+# ── Body parsing (for VTON pre-processing) ────────────────────────────────
+mediapipe>=0.10.14
 
-# Body parsing for VTON pre-processing (segments person → cloth-only mask)
-mediapipe==0.10.18
-
-# HuggingFace hub for model downloads
-huggingface_hub==0.27.0
+# ── HuggingFace model downloads ───────────────────────────────────────────
+huggingface_hub>=0.25
