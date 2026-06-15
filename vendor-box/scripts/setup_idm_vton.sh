@@ -56,21 +56,18 @@ mkdir -p "$TARGET"
 
 # Prefer `hf` (new HF CLI from huggingface_hub >=0.27). Fall back to legacy
 # `huggingface-cli` for older installs, then to Python snapshot_download.
+# Note: the new `hf` CLI's --exclude has different parsing rules — easier to
+# just download everything. The .md/.txt files are a few KB total.
 if command -v hf > /dev/null; then
-  hf download yisol/IDM-VTON \
-    --local-dir "$TARGET" \
-    --exclude "*.md" "*.txt"
+  hf download yisol/IDM-VTON --local-dir "$TARGET"
 elif command -v huggingface-cli > /dev/null; then
-  huggingface-cli download yisol/IDM-VTON \
-    --local-dir "$TARGET" \
-    --exclude "*.md" "*.txt"
+  huggingface-cli download yisol/IDM-VTON --local-dir "$TARGET"
 else
   python - <<PY
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id="yisol/IDM-VTON",
     local_dir="$TARGET",
-    ignore_patterns=["*.md", "*.txt"],
 )
 PY
 fi
