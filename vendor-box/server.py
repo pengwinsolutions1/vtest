@@ -238,9 +238,15 @@ async def _run_still(job: Job, req: StillReq) -> None:
             garment = Image.open(io.BytesIO(r.content)).convert("RGB")
         log.info("[%s] inputs fetched, running IDM-VTON", job.id)
 
+        # IDM_VTON_STEPS env var overrides the per-call step count. 8 is the
+        # snapshot-mode default (~4x faster than the 30-step training default
+        # with modest quality loss); bump to 16-30 for higher fidelity.
+        n_steps = int(os.environ.get("IDM_VTON_STEPS", "8"))
+
         result = await asyncio.to_thread(
             PIPES.idm_vton.run,
             selfie=selfie, garment=garment, category=req.category,
+            n_steps=n_steps,
         )
 
         # Save and serve back

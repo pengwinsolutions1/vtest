@@ -45,7 +45,10 @@ class IDMVTONPipe:
         garment: Image.Image,
         category: Literal["top", "bottom", "dress"],
         garment_description: str = "garment",
-        n_steps: int = 30,
+        # 30 is IDM-VTON's training default; 8 trades a bit of finger/edge
+        # detail for ~4x speedup. Tunable via IDM_VTON_STEPS env var read by
+        # the server, with a sane default of 8 for snapshot-mode kiosk UX.
+        n_steps: int = 8,
         guidance_scale: float = 2.0,
         seed: int = 42,
     ) -> Image.Image:
@@ -309,16 +312,22 @@ def load_idm_vton(path: Path, device: str = "cuda") -> IDMVTONPipe:
         unet_encoder=unet_encoder,
         torch_dtype=dtype,
     )
-    # CPU offloading on tight VRAM (16 GB cards). enable_model_cpu_offload
-    # only hooks top-level modules (text_encoder, unet, vae) — it doesn't
-    # catch submodules like unet.encoder_hid_proj (the IP-Adapter resampler).
-    # That submodule gets called directly by the pipeline, hits CPU weights
-    # against CUDA inputs, RuntimeError. enable_sequential_cpu_offload hooks
-    # every submodule, eliminating the device mismatch at the cost of more
-    # CPU↔GPU transfers per step (~2-3x slower than model offload).
+    # CPU offloading strategy:
+    #   - GPU >= 20 GB: everything stays on GPU, fastest path.
+    #   - GPU <  20 GB: enable_model_cpu_offload() — components offload to
+    #                   CPU when not in use. UNet stays on GPU during the
+    #                   diffusion loop, so it's much faster than sequential
+    #                   offload. ~3-4x faster overall.
+    #   - For model_cpu_offload, the IP-Adapter resampler (unet.encoder_hid_proj)
+    #     isn't auto-hooked — accelerate's pre-forward hook is on `unet` only,
+    #     and the pipeline calls encoder_hid_proj directly. Pre-move it to GPU
+    #     manually so it's already there when called.
     if torch.cuda.is_available() and torch.cuda.get_device_properties(0).total_memory < 20 * 1024**3:
-        log.info("enabling SEQUENTIAL CPU offload (GPU < 20 GB — slower, but no device mismatches)")
-        pipe.enable_sequential_cpu_offload()
+        log.info("enabling MODEL CPU offload (GPU < 20 GB) — UNet stays resident during diffusion")
+        pipe.enable_model_cpu_offload()
+        if hasattr(pipe.unet, "encoder_hid_proj") and pipe.unet.encoder_hid_proj is not None:
+            log.info("pre-moving unet.encoder_hid_proj to %s (IP-Adapter resampler hook fix)", device)
+            pipe.unet.encoder_hid_proj.to(device)
     else:
         pipe.to(device)
 
