@@ -485,8 +485,14 @@ export default function Home() {
       </div>
       {/* — end .stage-frame — */}
 
-      <div className="picker">
-        {visibleList.map(g => (
+      {/* Picker: TWO side columns on desktop (left + right of the frame),
+          ONE bottom row on phones/narrow screens. The same buttons are
+          rendered in both layouts; CSS shows the right one for the viewport. */}
+      {(() => {
+        const mid = Math.ceil(visibleList.length / 2);
+        const leftGarments = visibleList.slice(0, mid);
+        const rightGarments = visibleList.slice(mid);
+        const renderThumb = (g: Garment) => (
           <button
             key={g.id}
             className={`g-thumb ${selectedId === g.id ? 'selected' : ''}`}
@@ -497,8 +503,21 @@ export default function Home() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={g.url} alt={g.name} loading="lazy" />
           </button>
-        ))}
-      </div>
+        );
+        return (
+          <>
+            <div className="picker picker-left">
+              {leftGarments.map(renderThumb)}
+            </div>
+            <div className="picker picker-right">
+              {rightGarments.map(renderThumb)}
+            </div>
+            <div className="picker picker-bottom">
+              {visibleList.map(renderThumb)}
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }

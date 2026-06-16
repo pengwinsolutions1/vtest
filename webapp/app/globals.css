@@ -20,34 +20,56 @@ body {
 button { font: inherit; cursor: pointer; }
 input, button { font-size: 16px; } /* prevent iOS zoom on focus */
 
-/* --- Stage: a portrait-shaped kiosk frame, centred on screen --- */
+/* --- Stage: a portrait-shaped kiosk frame, with garment columns left + right
+       on wide screens, OR a horizontal strip below the frame on phones. --- */
 .stage {
   position: fixed;
   inset: 0;
   background: #0a0a0a;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  /* 3 columns:  left picker | portrait frame | right picker
+     Frame is the center, sized intrinsically. */
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-rows: 1fr;
   align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 16px;
+  justify-items: center;
+  gap: 20px;
+  padding: 20px;
   overflow: hidden;
 }
 
-/* The portrait frame. 3:4 aspect, sized by viewport so it fits any screen:
-   - On portrait screens (phone), nearly fills the viewport.
-   - On landscape desktops, shows as a tall narrow "phone-shape" display
-     with dark gutters on either side. */
+/* The portrait frame. 3:4 aspect, sized so it fits the viewport without
+   bumping into the side pickers. */
 .stage-frame {
+  grid-column: 2;
+  grid-row: 1;
   position: relative;
   aspect-ratio: 3 / 4;
-  width: min(90vw, calc((100vh - 200px) * 3 / 4));
-  max-height: calc(100vh - 200px);
+  /* Height-constrained, scaled so width = (height * 3/4). */
+  height: min(95vh, calc((100vw - 240px) * 4 / 3));
+  max-width: 100%;
   overflow: hidden;
-  border-radius: 24px;
+  border-radius: 28px;
   background: #000;
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6),
-              0 0 0 1px rgba(255, 255, 255, 0.04);
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.65),
+              0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+/* --- Phone / narrow viewport: stack as one column, picker at bottom --- */
+@media (max-width: 900px), (max-aspect-ratio: 1/1) {
+  .stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+    gap: 12px;
+    padding: 12px;
+  }
+  .stage-frame {
+    grid-column: 1;
+    grid-row: 1;
+    height: auto;
+    width: min(95vw, calc((95vh - 140px) * 3 / 4));
+    max-height: calc(95vh - 140px);
+  }
 }
 
 .stage-canvas {
@@ -107,20 +129,49 @@ input, button { font-size: 16px; } /* prevent iOS zoom on focus */
   border-color: var(--accent);
 }
 
-/* Garment picker — sits BELOW the portrait frame inside the flex stage.
-   Scrolls horizontally if there are more than fit. */
+/* --- Garment picker variants ---
+   Three are rendered in the DOM (picker-left, picker-right, picker-bottom);
+   media queries hide the one that doesn't fit the current viewport. */
 .picker {
-  flex: 0 0 auto;
-  width: min(95vw, 720px);
-  padding: 12px 14px calc(max(env(safe-area-inset-bottom), 12px));
   display: flex;
-  gap: 10px;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 18px;
+  -webkit-overflow-scrolling: touch;
+}
+.picker::-webkit-scrollbar { width: 6px; height: 6px; }
+.picker::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+
+/* Side picker (desktop): vertical column flanking the frame */
+.picker-left, .picker-right {
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 12px;
+  max-height: 90vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.picker-left  { grid-column: 1; grid-row: 1; justify-self: end;   }
+.picker-right { grid-column: 3; grid-row: 1; justify-self: start; }
+
+/* Bottom picker (phone): horizontal strip below the frame */
+.picker-bottom {
+  display: none;        /* visible only via the @media block below */
+  flex-direction: row;
+  width: min(95vw, 720px);
+  padding: 10px 12px;
   overflow-x: auto;
   overflow-y: hidden;
   scroll-snap-type: x mandatory;
-  -webkit-overflow-scrolling: touch;
-  background: rgba(0, 0, 0, 0.4);
-  border-radius: 16px;
+}
+
+@media (max-width: 900px), (max-aspect-ratio: 1/1) {
+  .picker-left, .picker-right { display: none; }
+  .picker-bottom {
+    display: flex;
+    grid-column: 1;
+    grid-row: 2;
+  }
 }
 .picker::-webkit-scrollbar { display: none; }
 
