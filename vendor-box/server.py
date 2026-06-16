@@ -71,6 +71,7 @@ PUBLIC_BASE_URL = os.environ.get("VENDORBOX_PUBLIC_URL", _default_public_url()).
 class Pipelines:
     """Lazy-loaded pipelines. None = unavailable on this box."""
     idm_vton: Any = None
+    catvton: Any = None
     wan_i2v: Any = None
     dm_vton: Any = None
     device: str = "cpu"
@@ -78,6 +79,23 @@ class Pipelines:
 
 
 PIPES = Pipelines()
+
+# Which model serves /tryon/still. Set via SNAPSHOT_MODEL env var:
+#   SNAPSHOT_MODEL=idm_vton  (default, photoreal but slow ~25-30s on 4060 Ti)
+#   SNAPSHOT_MODEL=catvton   (fast ~4-6s, similar quality, NC license)
+#   SNAPSHOT_MODEL=auto      (use catvton if loaded, else idm_vton)
+SNAPSHOT_MODEL = os.environ.get("SNAPSHOT_MODEL", "auto").lower()
+
+
+def _active_snapshot_pipe():
+    """Return the IDMVTONPipe or CatVTONPipe currently serving /tryon/still,
+    or None if no snapshot model is loaded."""
+    if SNAPSHOT_MODEL == "catvton":
+        return PIPES.catvton
+    if SNAPSHOT_MODEL == "idm_vton":
+        return PIPES.idm_vton
+    # auto: prefer catvton (faster), fall back to idm_vton
+    return PIPES.catvton or PIPES.idm_vton
 
 
 def _load_pipelines() -> None:
@@ -118,7 +136,21 @@ def _load_pipelines() -> None:
             ))
             if PIPES.idm_vton: log.info("IDM-VTON ready")
         else:
-            log.info("IDM-VTON: skipped (LIVE-only mode; set LOAD_IDM_VTON=1 to enable)")
+            log.info("IDM-VTON: skipped (set LOAD_IDM_VTON=1 to enable)")
+
+        # ── CatVTON (ICLR 2025) — fast SD 1.5 alternative ──────────────
+        # 10× faster than IDM-VTON on the same hardware (~4-6s on RTX 4060 Ti).
+        # Set LOAD_CATVTON=1 to enable. License: CC BY-NC-SA 4.0 — research/
+        # non-commercial only without a separately-negotiated commercial license
+        # from the authors.
+        if os.environ.get("LOAD_CATVTON") == "1":
+            log.info("loading CatVTON…")
+            PIPES.catvton = _try_load("CatVTON", lambda: (
+                __import__("catvton_loader").load_catvton(MODELS_DIR / "catvton", device="cuda")
+            ))
+            if PIPES.catvton: log.info("CatVTON ready")
+        else:
+            log.info("CatVTON: skipped (set LOAD_CATVTON=1 to enable)")
 
         # ── Wan 2.1 i2v (snapshot video) — DISABLED by default ───────
         # Video animation only makes sense layered on top of a snapshot still.
@@ -216,18 +248,25 @@ class VideoReq(BaseModel):
 
 @app.post("/tryon/still")
 async def tryon_still(req: StillReq) -> dict[str, str]:
-    """Kick off an IDM-VTON inference. Returns a prediction_id to poll."""
-    if PIPES.idm_vton is None:
-        raise HTTPException(503, "IDM-VTON not loaded on this box")
+    """Kick off a snapshot inference (IDM-VTON or CatVTON depending on
+    SNAPSHOT_MODEL). Returns a prediction_id to poll."""
+    pipe = _active_snapshot_pipe()
+    if pipe is None:
+        raise HTTPException(
+            503,
+            "No snapshot model loaded. Set LOAD_IDM_VTON=1 or LOAD_CATVTON=1.",
+        )
     job = Job(id=f"still_{uuid.uuid4().hex}", kind="still")
     JOBS[job.id] = job
-    # Fire-and-forget — runs on the GPU executor thread
     asyncio.create_task(_run_still(job, req))
     return {"prediction_id": job.id}
 
 
 async def _run_still(job: Job, req: StillReq) -> None:
     try:
+        pipe = _active_snapshot_pipe()
+        if pipe is None:
+            raise RuntimeError("snapshot model unloaded between request + run")
         # Download inputs from the webapp (same LAN)
         import httpx
         from PIL import Image
@@ -236,19 +275,26 @@ async def _run_still(job: Job, req: StillReq) -> None:
             selfie = Image.open(io.BytesIO(r.content)).convert("RGB")
             r = await client.get(req.garment_url); r.raise_for_status()
             garment = Image.open(io.BytesIO(r.content)).convert("RGB")
-        log.info("[%s] inputs fetched, running IDM-VTON", job.id)
+        # Identify which model we're routing to so the log + tuning dials
+        # match the right backend.
+        is_catvton = pipe is PIPES.catvton
+        model_name = "CatVTON" if is_catvton else "IDM-VTON"
+        log.info("[%s] inputs fetched, running %s", job.id, model_name)
 
-        # Env-var quality dials. Defaults are FAST mode (~3-6s on RTX 4060 Ti);
-        # bump for higher fidelity:
-        #   IDM_VTON_STEPS:   4 (fast) / 8 / 20 / 30 (max)
-        #   IDM_VTON_RES:     512 (fast) / 768 (quality)
-        #   IDM_VTON_GUIDANCE: 2.0 (default) / 2.5 (stronger garment adherence)
-        n_steps  = int(os.environ.get("IDM_VTON_STEPS", "4"))
-        res      = int(os.environ.get("IDM_VTON_RES",   "512"))
-        guidance = float(os.environ.get("IDM_VTON_GUIDANCE", "2.0"))
+        # Per-backend quality dials. Defaults are FAST for both.
+        #   IDM_VTON_STEPS=4 / IDM_VTON_RES=512 / IDM_VTON_GUIDANCE=2.0
+        #   CATVTON_STEPS=20 / CATVTON_RES=512 / CATVTON_GUIDANCE=2.5
+        if is_catvton:
+            n_steps  = int(os.environ.get("CATVTON_STEPS",   "20"))
+            res      = int(os.environ.get("CATVTON_RES",     "512"))
+            guidance = float(os.environ.get("CATVTON_GUIDANCE", "2.5"))
+        else:
+            n_steps  = int(os.environ.get("IDM_VTON_STEPS",  "4"))
+            res      = int(os.environ.get("IDM_VTON_RES",    "512"))
+            guidance = float(os.environ.get("IDM_VTON_GUIDANCE", "2.0"))
 
         result = await asyncio.to_thread(
-            PIPES.idm_vton.run,
+            pipe.run,
             selfie=selfie, garment=garment, category=req.category,
             n_steps=n_steps,
             guidance_scale=guidance,
@@ -417,10 +463,18 @@ async def healthz() -> dict[str, Any]:
     # successfully with just the still when Wan 2.1 is unavailable.
     # `live` is true if EITHER DM-VTON or IDM-VTON is loaded — the WebSocket
     # handler falls back to IDM-VTON low-step when DM-VTON isn't installed.
+    active = _active_snapshot_pipe()
+    snapshot_model = (
+        "catvton" if active is PIPES.catvton
+        else "idm_vton" if active is PIPES.idm_vton
+        else "unavailable"
+    )
     return {
         "ok": True,
         "cuda": PIPES.cuda_available,
-        "snapshot": PIPES.idm_vton is not None,
+        "snapshot": active is not None,
+        "snapshot_model": snapshot_model,           # which one serves /tryon/still
+        "snapshot_model_preference": SNAPSHOT_MODEL, # env-var setting (auto/idm_vton/catvton)
         "live": PIPES.dm_vton is not None or PIPES.idm_vton is not None,
         "live_mode": (
             "dm_vton" if PIPES.dm_vton is not None
@@ -430,6 +484,7 @@ async def healthz() -> dict[str, Any]:
         "video": PIPES.wan_i2v is not None,
         "models_loaded": {
             "idm_vton": PIPES.idm_vton is not None,
+            "catvton": PIPES.catvton is not None,
             "wan_i2v": PIPES.wan_i2v is not None,
             "dm_vton": PIPES.dm_vton is not None,
         },

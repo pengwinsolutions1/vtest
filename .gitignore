@@ -137,6 +137,7 @@ vendor-box/.venv/
 vendor-box/IDM-VTON/
 vendor-box/DM-VTON/
 vendor-box/Wan2.1/
+vendor-box/CatVTON/
 /var/lib/vendorbox/
 
 # ============================================================================
